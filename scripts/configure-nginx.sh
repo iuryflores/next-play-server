@@ -47,6 +47,15 @@ if [[ "$kind" == client ]]; then endpoint=/deploy-meta.json; else endpoint=/api/
 # --resolve permite validar o host localmente, mesmo antes da propagação DNS.
 if [[ "$scheme" == https ]]; then destination="https://$domain$endpoint"; resolution="$domain:443:127.0.0.1";
 else destination="http://$domain$endpoint"; resolution="$domain:80:127.0.0.1"; fi
-curl --fail --silent --max-time 10 --resolve "$resolution" "$destination" | grep -Fq "\"releaseId\":\"$release_id\""
+# O reload é assíncrono: os workers antigos podem atender a primeira requisição.
+# Aguarda a nova configuração e ignora proxies de ambiente na consulta local.
+verified=false
+for attempt in {1..15}; do
+  if curl --noproxy '*' --fail --silent --max-time 4 --resolve "$resolution" "$destination" | grep -Fq "\"releaseId\":\"$release_id\""; then
+    verified=true; break
+  fi
+  sleep 1
+done
+[[ "$verified" == true ]]
 trap - ERR TERM INT
 echo '[nextplay] Roteamento da release validado no Nginx.'
