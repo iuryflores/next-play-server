@@ -6,3 +6,8 @@ dist/
 *.log
 *.tsbuildinfo
 coverage/
+.migration-backups/
+
+.env.rotten-tomatoes.local
+
+/application.tar.gz

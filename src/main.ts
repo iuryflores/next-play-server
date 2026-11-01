@@ -7,4 +7,7 @@ async function bootstrap() {
   await app.listen(config.port, config.host);
   console.info(`NextPlay API (NestJS): http://${config.host}:${config.port}/api`);
 }
-void bootstrap().catch(() => { console.error('Não foi possível iniciar a API. Confira a configuração e a conexão com o MongoDB.'); process.exitCode = 1; });
+void bootstrap().catch((error: Error & { code?: string | number }) => {
+  console.error(`Não foi possível iniciar a API: ${error.name}${error.code ? ` (${error.code})` : ''}. Confira a configuração e a conexão com o MongoDB.`);
+  process.exitCode = 1;
+});

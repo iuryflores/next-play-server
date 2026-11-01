@@ -1,3 +1,5 @@
+// Este cenário testa o fluxo legado; confirmação obrigatória tem suíte própria.
+process.env.EMAIL_VERIFICATION_REQUIRED = 'false';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
@@ -40,7 +42,7 @@ test('NestJS authentication with isolated MongoDB', async t => {
     const response = await request('/auth/register', 'POST', account);
     assert.equal(response.status, 201);
     const { user } = await response.json();
-    assert.deepEqual(Object.keys(user).sort(), ['email', 'id', 'provider']); userId = user.id;
+    assert.deepEqual(Object.keys(user).sort(), ['avatar', 'displayName', 'email', 'id', 'language', 'provider', 'requiresVerification']); assert.equal(user.requiresVerification, false); assert.equal(user.language, 'pt-BR'); userId = user.id;
     assert.match(response.headers.get('set-cookie'), /HttpOnly/);
     assert.match(response.headers.get('set-cookie'), /SameSite=Lax/);
     firstCookie = cookieFrom(response);
@@ -58,9 +60,15 @@ test('NestJS authentication with isolated MongoDB', async t => {
     assert.equal(wrong.status, 401); assert.deepEqual(await wrong.json(), await unknown.json());
   });
   await t.test('session lookup, normalization, rotation and logout', async () => {
+    assert.equal((await request('/auth/preferences', 'POST', { language: 'en-US' })).status, 401);
+    assert.equal((await request('/auth/preferences', 'POST', { language: 'xx' }, firstCookie)).status, 400);
+    assert.equal((await request('/auth/preferences', 'POST', { language: 'en-US' }, firstCookie, 'https://evil.example')).status, 403);
+    assert.equal((await request('/auth/preferences', 'POST', { language: 'en-US' }, firstCookie)).status, 200);
+    assert.equal((await (await request('/auth/me', 'GET', undefined, firstCookie)).json()).user.language, 'en-US');
     assert.equal((await (await request('/auth/me', 'GET', undefined, firstCookie)).json()).user.id, userId);
     const login = await request('/auth/login', 'POST', { ...account, email: ' PERSON@EXAMPLE.TEST ' }, firstCookie);
     assert.equal(login.status, 200); const nextCookie = cookieFrom(login);
+    assert.equal((await login.json()).user.language, 'en-US');
     assert.equal((await request('/auth/me', 'GET', undefined, firstCookie)).status, 401);
     assert.equal((await request('/auth/me', 'GET', undefined, nextCookie)).status, 200);
     assert.equal((await request('/auth/logout', 'POST', {}, nextCookie)).status, 204);

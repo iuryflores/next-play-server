@@ -1,0 +1,7 @@
+{
+  "kind": "server",
+  "domain": "nextplay.imjsistemas.com.br",
+  "port": 3111,
+  "clientPort": 3110,
+  "apiPort": 3111
+}

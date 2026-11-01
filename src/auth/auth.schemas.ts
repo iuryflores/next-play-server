@@ -1,8 +1,22 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types, Schema as MongoSchema } from 'mongoose';
 
-@Schema({ timestamps: true, collection: 'users' })
+@Schema({ timestamps: true, collection: 'users', optimisticConcurrency: true })
 export class User {
+  // Só contas novas marcadas explicitamente exigem confirmação; contas antigas mantêm o acesso.
+  @Prop() verificationRequired?: boolean;
+  @Prop() emailVerifiedAt?: Date;
+  @Prop({ select: false }) verificationTokenHash?: string;
+  @Prop({ select: false }) verificationExpiresAt?: Date;
+  @Prop({ select: false }) verificationRequestedAt?: Date;
+  @Prop({ select: false }) resetTokenHash?: string;
+  @Prop({ select: false }) resetExpiresAt?: Date;
+  @Prop({ select: false }) resetRequestedAt?: Date;
+  @Prop() passwordChangedAt?: Date;
+  @Prop({ default: '', maxlength: 40 }) displayName!: string;
+  @Prop({ default: '', maxlength: 100000 }) avatar!: string;
+  @Prop({ default: '' }) avatarKey!: string;
+  @Prop({ default: 'pt-BR', enum: ['pt-BR', 'en-US', 'es-ES'] }) language!: string;
   @Prop({ required: true, unique: true, lowercase: true, trim: true }) email!: string;
   @Prop({ required: true, select: false }) passwordHash!: string;
 }
@@ -11,6 +25,7 @@ export const UserSchema = SchemaFactory.createForClass(User);
 
 @Schema({ collection: 'sessions', timestamps: true })
 export class Session {
+  createdAt!: Date;
   @Prop({ required: true, unique: true }) tokenHash!: string;
   @Prop({ type: MongoSchema.Types.ObjectId, ref: User.name, required: true, index: true }) userId!: Types.ObjectId;
   @Prop({ required: true }) expiresAt!: Date;

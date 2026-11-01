@@ -22,7 +22,7 @@ export class AuthRequestGuard implements CanActivate {
       if ((error as { code?: number }).code !== 11000) throw error;
       attempt = await this.attempts.findOneAndUpdate({ key }, { $inc: { count: 1 } }, { returnDocument: 'after' }).exec();
     }
-    const limit = request.path.endsWith('/register') ? 5 : 20;
+    const limit = /\/(register|forgot-password|reset-password|confirm-email|resend-confirmation)$/.test(request.path) ? 5 : 20;
     if (!attempt || attempt.count > limit) throw new HttpException('Muitas tentativas. Aguarde um minuto e tente novamente.', 429);
     return true;
   }

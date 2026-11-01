@@ -1,0 +1,44 @@
+// Este cenário testa o fluxo legado; confirmação obrigatória tem suíte própria.
+process.env.EMAIL_VERIFICATION_REQUIRED = 'false';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const database = 'nextplay_friends_test_' + randomUUID().replaceAll('-', '');
+process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/' + database;
+process.env.CLIENT_ORIGIN = 'http://localhost:5174'; process.env.NODE_ENV = 'test'; process.env.ALLOW_REGISTRATION = 'true';
+const { createApp } = require('../dist/bootstrap');
+const { getConnectionToken } = require('@nestjs/mongoose');
+const { Types } = require('mongoose');
+test('friend acceptance gates rankings, ranks time fairly and supports removal', async t => {
+  const app = await createApp(); await app.listen(0, '127.0.0.1'); const base = await app.getUrl(); const db = app.get(getConnectionToken());
+  t.after(async () => { try { assert.match(database, /^nextplay_friends_test_[a-f0-9]{32}$/); assert.equal(db.name, database); await db.dropDatabase(); } finally { await app.close(); } });
+  const call = (path, method = 'GET', body, cookie, origin = process.env.CLIENT_ORIGIN) => fetch(base + '/api' + path, { method, headers: { origin, ...(cookie ? { cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const register = async email => { const r = await call('/auth/register', 'POST', { email, password: 'Long-test-password-123!' }); assert.equal(r.status, 201); return { cookie: r.headers.get('set-cookie').split(';')[0], id: (await r.json()).user.id }; };
+  const a = await register('a@example.test'), b = await register('b@example.test'), c = await register('c@example.test');
+  assert.equal((await call('/friends')).status, 401);
+  assert.equal((await call('/friends/profile', 'POST', { name: 'Alex' }, a.cookie)).status, 204);
+  assert.equal((await call('/friends/requests', 'POST', { code: a.id }, a.cookie)).status, 400);
+  assert.equal((await call('/friends/requests', 'POST', { code: 'bad' }, a.cookie)).status, 400);
+  assert.equal((await call('/friends/requests', 'POST', { code: b.id }, a.cookie, 'https://evil.example')).status, 403);
+  assert.equal((await call('/friends/requests', 'POST', { code: b.id }, a.cookie)).status, 204);
+  assert.equal((await call('/friends/requests', 'POST', { code: a.id }, b.cookie)).status, 409);
+  let data = await (await call('/friends', 'GET', undefined, a.cookie)).json();
+  const id = data.connections[0].id; assert.equal(data.ranking.length, 1); assert.equal(data.name, 'Alex'); assert.ok(!JSON.stringify(data).includes('@'));
+  assert.equal((await call('/friends/' + id + '/accept', 'POST', undefined, a.cookie)).status, 404);
+  assert.equal((await call('/friends/' + id + '/accept', 'POST', undefined, c.cookie)).status, 404);
+  assert.equal((await call('/friends/' + id + '/accept', 'POST', undefined, b.cookie)).status, 204);
+  data = await (await call('/friends', 'GET', undefined, a.cookie)).json(); assert.equal(data.ranking.length, 2); assert.deepEqual(data.ranking.map(row => row.rank), [1, 2]); assert.equal(data.ranking[0].id, a.id);
+  const itemId = new Types.ObjectId();
+  await db.collection('library_items').insertOne({ _id: itemId, ownerId: new Types.ObjectId(b.id), title: 'Private title', kind: 'series', status: 'active', catalogId: 'tmdb:series:22', notes: 'secret' });
+  await db.collection('series_seasons').insertOne({ catalogId: 'tmdb:series:22', number: 1, episodes: [{ number: 1, runtime: 45 }, { number: 2 }] });
+  await db.collection('episode_progress').insertMany([{ itemId, season: 1, episode: 1, watchedAt: new Date() }, { itemId, season: 1, episode: 2, watchedAt: new Date() }]);
+  data = await (await call('/friends', 'GET', undefined, a.cookie)).json();
+  assert.equal(data.ranking[0].id, b.id); assert.equal(data.ranking[0].minutes, 45); assert.equal(data.ranking[0].episodes, 2); assert.equal(data.ranking[0].incomplete, true); assert.equal(data.ranking[1].rank, 2); assert.ok(!JSON.stringify(data).includes('Private title')); assert.ok(!JSON.stringify(data).includes('secret'));
+  assert.equal((await call('/friends/' + id, 'DELETE', undefined, c.cookie)).status, 404);
+  assert.equal((await call('/friends/' + id, 'DELETE', undefined, a.cookie)).status, 204);
+  assert.equal((await (await call('/friends', 'GET', undefined, b.cookie)).json()).ranking.length, 1);
+  assert.equal((await call('/friends/requests', 'POST', { code: c.id }, a.cookie)).status, 204);
+  const pending = (await (await call('/friends', 'GET', undefined, c.cookie)).json()).connections[0];
+  assert.equal(pending.incoming, true); assert.equal((await call('/friends/' + pending.id, 'DELETE', undefined, c.cookie)).status, 204);
+});
+

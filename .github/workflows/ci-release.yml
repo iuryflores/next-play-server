@@ -1,0 +1,128 @@
+name: CI, release e deploy NextPlay server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publicar na EC2 após validar (somente main)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nextplay-server-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Validar e compilar
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mongodb:
+        image: mongo:8.0
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.3'
+          cache: npm
+      - name: Validar título do PR
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/check-commit-title.mjs
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check:version
+      - run: npm test
+      - run: npm run build
+      - name: Validar deploy e automação de release
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          npm run test:deploy
+      - name: Empacotar API validada
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        # Somente build e manifestos. Secrets entram depois, no job com environment.
+        run: tar -czf application.tar.gz dist package.json package-lock.json
+      - uses: actions/upload-artifact@v7
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          name: nextplay-server-${{ github.sha }}
+          path: application.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+
+  deploy:
+    name: Publicar via SSM
+    needs: validate
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && vars.DEPLOY_ENABLED == 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.deploy))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    concurrency:
+      group: nextplay-server-ec2
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.23.3'
+      - uses: actions/download-artifact@v8
+        with:
+          name: nextplay-server-${{ github.sha }}
+          path: ${{ runner.temp }}/nextplay-artifact
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Transferir, ativar e verificar
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          DEPLOY_BUCKET: ${{ vars.DEPLOY_BUCKET }}
+          EC2_USER: ${{ vars.EC2_USER }}
+          PM2_APP_NAME: ${{ vars.PM2_APP_NAME || 'nextplay-api' }}
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+        run: bash scripts/deploy-ssm-runner.sh
+
+  release:
+    name: Preparar ou publicar release
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Conferir token de release
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+        run: test -n "$RELEASE_TOKEN" || { echo 'Cadastre RELEASE_AUTOMATION_TOKEN nos repository secrets.'; exit 1; }
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

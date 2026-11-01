@@ -1,0 +1,2 @@
+const mongoose = require('mongoose');
+(async()=>{const c=await mongoose.createConnection(process.env.MONGODB_URI,{serverSelectionTimeoutMS:7000}).asPromise();try{const users=await c.collection('users').find({},{projection:{_id:1,language:1}}).toArray();for(const u of users) console.log(JSON.stringify({language:u.language,items:await c.collection('library_items').countDocuments({ownerId:u._id}),sessions:await c.collection('sessions').countDocuments({userId:u._id,expiresAt:{$gt:new Date()}})}));}finally{await c.close();}})().catch(e=>{console.log(e.name);process.exitCode=1;});
