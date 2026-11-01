@@ -27,7 +27,9 @@ jobs:
     timeout-minutes: 20
     services:
       mongodb:
-        image: mongo:8.0
+        # MongoDB 8 usa um alocador incompatível com o kernel atual dos runners.
+        # A suíte valida as operações compartilhadas com MongoDB 7 sem tocar no Atlas.
+        image: mongo:7.0
         ports: ['27017:27017']
         options: >-
           --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
