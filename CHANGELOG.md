@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/iuryflores/next-play-server/compare/v0.2.0...v0.3.0) (2026-11-01)
+
+
+### Features
+
+* add collector MVP with books and private item photos ([b178e42](https://github.com/iuryflores/next-play-server/commit/b178e42ed88074bf7637cfd1a2eb8844708bbc93))
+
 ## [0.2.0](https://github.com/iuryflores/next-play-server/compare/v0.1.0...v0.2.0) (2026-11-01)
 
 
