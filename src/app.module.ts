@@ -7,6 +7,7 @@ import { CatalogModule } from './catalog/catalog.module';
 import { Controller, Get, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from './auth/auth.module';
+import { CollectorModule } from './collector/collector.module';
 import { getConfig } from './config';
 
 @ApiTags('health')
@@ -27,7 +28,7 @@ class HealthController {
       connection.on('error', (error: Error & { code?: string | number }) => console.error(`[MongoDB] Erro de conexão: ${error.name}${error.code ? ` (${error.code})` : ''}`));
       return connection;
     },
-  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule],
+  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule],
   controllers: [HealthController],
 })
 export class AppModule {}

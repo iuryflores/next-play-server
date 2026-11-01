@@ -105,6 +105,7 @@ jobs:
           EC2_USER: ${{ vars.EC2_USER }}
           PM2_APP_NAME: ${{ vars.PM2_APP_NAME || 'nextplay-api' }}
           APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+          GOOGLE_BOOKS_API_KEY: ${{ secrets.GOOGLE_BOOKS_API_KEY }}
         run: bash scripts/deploy-ssm-runner.sh
 
   release:

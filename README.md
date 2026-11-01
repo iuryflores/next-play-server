@@ -133,6 +133,14 @@ Google e SMS estão deliberadamente indisponíveis. Nenhuma chave é necessária
 
 ## Publicação futura
 
+O deploy via SSM publica o MVP na EC2 com PM2/Nginx. O environment `production`
+mantém `APP_ENV_FILE` com a configuração principal. `GOOGLE_BOOKS_API_KEY` pode
+ser cadastrado como secret separado nesse environment: o runner incorpora a chave
+ao `.env` privado sem imprimir seu valor nem incluí-lo no artifact público.
+Se o secret dedicado não existir, a configuração presente em `APP_ENV_FILE` é mantida.
+Os templates Nginx aceitam até 650 KB no transporte da API para as fotos de objetos;
+o backend mantém os limites menores nas rotas que não recebem imagens.
+
 ## Fotos de perfil no S3
 
 Novas fotos são enviadas pelo backend ao bucket privado `nextplay-ij`, em

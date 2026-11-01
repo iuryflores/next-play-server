@@ -21,7 +21,7 @@ for file in deploy-ec2.sh deploy-config.mjs deploy-settings.json configure-nginx
 cp "$GITHUB_WORKSPACE/deploy/nginx/"*.conf "$task_dir/"
 if [[ "$kind" == server ]]; then
   [[ -n "${APP_ENV_FILE:-}" ]] || { echo '[nextplay] APP_ENV_FILE ausente.' >&2; exit 1; }
-  printf '%s\n' "$APP_ENV_FILE" > "$task_dir/app.env"
+  node scripts/prepare-deploy-env.mjs "$task_dir/app.env"
 fi
 # O .env não entra no artifact do GitHub: só neste pacote privado SSE-S3.
 files=(application.tar.gz deploy-ec2.sh deploy-config.mjs deploy-settings.json configure-nginx.sh serve-frontend.mjs nginx-http.conf nginx-https.conf)

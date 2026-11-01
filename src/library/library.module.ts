@@ -1,4 +1,4 @@
-import { ApiProperty, ApiTags, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from './vote-identity';
 import { snapshot } from './ranking-snapshot';
 import { compareRankingVisit } from './ranking-visits';
@@ -9,6 +9,7 @@ import { actorVotes, type CastCache } from './actor-votes';
 import { EpisodesModule, EpisodesService } from '../episodes/episodes.module';
 import { Body, Controller, Delete, Get, HttpCode, Injectable, Module, NotFoundException, Param, Query, Patch, Post, Req, ForbiddenException, BadRequestException, ConflictException, OnModuleInit } from '@nestjs/common';
 import { CatalogModule, CatalogService } from '../catalog/catalog.module';
+import { BooksModule, BooksService } from '../books/books.module';
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Connection, Model, Schema as MongoSchema, Types, HydratedDocument } from 'mongoose';
 import { createHash } from 'node:crypto';
@@ -52,6 +53,11 @@ class LibraryItem {
   @Prop() unreleased?: boolean;
   @Prop() overview?: string;
   @Prop() sourceUrl?: string;
+  @Prop({ type: [String], default: undefined }) authors?: string[];
+  @Prop() publisher?: string;
+  @Prop() isbn?: string;
+  @Prop() language?: string;
+  @Prop({ default: 0 }) bookMetadataVersion!: number;
 }
 const ItemSchema = SchemaFactory.createForClass(LibraryItem);
 ItemSchema.index({ ownerId: 1, updatedAt: -1 });
@@ -73,6 +79,11 @@ class CatalogEntry {
   @Prop() unreleased?: boolean;
   @Prop() overview?: string;
   @Prop() sourceUrl?: string;
+  @Prop({ type: [String], default: undefined }) authors?: string[];
+  @Prop() publisher?: string;
+  @Prop() isbn?: string;
+  @Prop() language?: string;
+  @Prop({ default: 0 }) bookMetadataVersion!: number;
 }
 const CatalogSchema = SchemaFactory.createForClass(CatalogEntry);
 CatalogSchema.index({ kind: 1, genres: 1 });
@@ -98,7 +109,7 @@ class ItemDto {
   @IsString() @MinLength(1) @MaxLength(200) title!: string;
   @ApiProperty({ type: String, required: true, enum: kinds })
   @IsIn(kinds) kind!: string;
-  @ApiProperty({ type: String, required: true, enum: statuses })
+  @ApiProperty({ type: String, required: true, enum: statuses, description: 'Para livros: planned = Quero ler, active = Lendo, completed = Lido. Posse fica separada em collector_copies.' })
   @IsIn(statuses) status!: string;
   @ApiProperty({ type: String, required: false, maxLength: 1000 })
   @IsOptional() @IsString() @MaxLength(1000) notes?: string;
@@ -116,12 +127,12 @@ class ItemDto {
   @IsOptional() @IsString() @MaxLength(100) favoriteCharacter?: string;
   @ApiProperty({ type: String, required: false, maxLength: 500 })
   @IsOptional() @IsString() @MaxLength(500) favoriteCastId?: string;
-  @ApiProperty({ type: String, required: false, maxLength: 60 })
-  @IsOptional() @IsString() @MaxLength(60) catalogId?: string;
+  @ApiProperty({ type: String, required: false, maxLength: 117, description: 'Referência opcional. Livros usam googlebooks:book:<volumeId>; sem referência, cadastro manual. Metadados são resolvidos no servidor.' })
+  @IsOptional() @IsString() @MaxLength(117) catalogId?: string;
 }
 @Injectable()
 export class LibraryService implements OnModuleInit {
-  constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService) {}
+  constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService, private readonly books: BooksService) {}
   async onModuleInit() {
     await Promise.all([this.items.init(), this.titles.init(), this.comments.init()]);
     // Backfill metadata already saved locally; never call providers at startup.
@@ -190,7 +201,7 @@ export class LibraryService implements OnModuleInit {
     if (!removed) throw new NotFoundException('Comentário não encontrado.');
   }
   private metadata(item: Partial<CatalogEntry>) {
-    return { title: item.title, originalTitle: item.originalTitle, kind: item.kind, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl };
+    return { title: item.title, originalTitle: item.originalTitle, kind: item.kind, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '', bookMetadataVersion: item.bookMetadataVersion || 0 } : {}) };
   }
   private async remember(item: Partial<CatalogEntry>) {
     const key = item.catalogId || 'local:' + createHash('sha256').update(item.kind + ':' + item.title!.trim().toLocaleLowerCase('pt-BR')).digest('hex').slice(0, 40);
@@ -231,7 +242,7 @@ export class LibraryService implements OnModuleInit {
     }
     return { sections };
   }
-  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), platform: item.kind === 'game' ? item.platform || '' : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl }; }
+  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), platform: item.kind === 'game' ? item.platform || '' : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
   private id(value: string) { if (!/^[a-f0-9]{24}$/i.test(value)) throw new BadRequestException('Item inválido.'); return value; }
   async list(ownerId: string) {
     const items = await this.items.find({ ownerId }).sort({ updatedAt: -1, _id: -1 }).exec();
@@ -420,9 +431,10 @@ export class LibraryService implements OnModuleInit {
     const { catalogId, ...manual } = dto;
     const stored = catalogId ? await this.titles.findOne({ key: catalogId }).exec() : undefined;
     if (catalogId?.startsWith('local:') && !stored) throw new BadRequestException('Título não encontrado no NextPlay.');
-    const details = stored ? this.metadata(stored) : catalogId ? await this.catalog.detail(catalogId) : undefined;
+    const details = stored ? this.metadata(stored) : catalogId ? catalogId.startsWith('googlebooks:book:') ? await this.books.detail(catalogId) : await this.catalog.detail(catalogId) : undefined;
     if (details && details.kind !== dto.kind) throw new BadRequestException('A categoria não corresponde ao título selecionado.');
-    const payload = { ...manual, ...details, genres: [...new Set((dto.kind === 'game' ? dto.genres ?? details?.genres ?? [] : details?.genres ?? manual.genres ?? []).map(value => value.trim()).filter(Boolean))], platform: dto.kind === 'game' ? (dto.platform || '').trim() : '' };
+    // Acompanhamento de leitura registra intenção/progresso; nunca cria ou altera exemplares no acervo.
+    const payload = { ...manual, ...details, ...(dto.kind === 'book' ? { bookMetadataVersion: catalogId ? 1 : 0 } : {}), genres: [...new Set((dto.kind === 'game' ? dto.genres ?? details?.genres ?? [] : details?.genres ?? manual.genres ?? []).map(value => value.trim()).filter(Boolean))], platform: dto.kind === 'game' ? (dto.platform || '').trim() : '' };
     const completion = await this.completion(dto, undefined, catalogId);
     const allEpisodes = dto.status === 'completed' && payload.kind === 'series' && details?.catalogId?.startsWith('tmdb:series:') ? await this.episodes.prepareCompletion(details.catalogId!) : null;
     const catalogKey = await this.remember(payload);
@@ -436,7 +448,7 @@ export class LibraryService implements OnModuleInit {
     if ((existing.catalogId ? existing.kind : dto.kind) === 'movie' && dto.status === 'active') dto.status = 'planned';
     if (dto.catalogId && dto.catalogId !== existing.catalogId) throw new BadRequestException('Não é possível trocar a referência deste título.');
     const allEpisodes = dto.status === 'completed' && existing.kind === 'series' && existing.catalogId?.startsWith('tmdb:series:') && (existing.status !== 'completed' || !existing.episodesCompletedAt) ? await this.episodes.prepareCompletion(existing.catalogId) : null;
-    const changes = existing.catalogId ? { status: dto.status, notes: dto.notes ?? '', genres: dto.genres ?? existing.genres } : { title: dto.title, kind: dto.kind, status: dto.status, notes: dto.notes ?? '', genres: dto.genres ?? existing.genres };
+    const changes = existing.catalogId ? { status: dto.status, notes: dto.notes ?? '', genres: existing.kind === 'book' ? existing.genres : dto.genres ?? existing.genres } : { title: dto.title, kind: dto.kind, status: dto.status, notes: dto.notes ?? '', genres: dto.genres ?? existing.genres };
     const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { ...changes, platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
     if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); }
@@ -478,13 +490,19 @@ class LibraryController {
   @Post(':id/runtime') async movieRuntime(@Req() request: Request, @Param('id') id: string) { return this.library.movieRuntime(await this.owner(request), id); }
   @Get('stats') async stats(@Req() request: Request) { const owner = await this.owner(request); return this.library.rankingVisit(owner, request.get('X-Ranking-Visit')); }
   @Get('explore') async explore(@Req() request: Request, @Query('page') page?: string, @Query('kind') kind?: string) { const owner = await this.owner(request); const language = await this.language(request); this.catalog.limit(owner); const result = await this.library.explore(owner, language, page === undefined ? 1 : Number(page), kind); return { sections: await Promise.all(result.sections.map(async section => ({ ...section, results: 'source' in section && section.source === 'tmdb' ? section.results : await Promise.all(section.results.map(item => this.catalog.localize(item, language))) }))) }; }
-  @Get() async list(@Req() request: Request) { return { items: await this.catalog.localizeMany(await this.library.list(await this.owner(request)), await this.language(request)) }; }
-  @Post() async create(@Req() request: Request, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.create(await this.owner(request), dto), await this.language(request)) }; }
-  @Patch(':id') async update(@Req() request: Request, @Param('id') id: string, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.update(await this.owner(request), id, dto), await this.language(request)) }; }
+  @Get()
+  @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Livros não são importados automaticamente da Minha Coleção.' })
+  async list(@Req() request: Request) { return { items: await this.catalog.localizeMany(await this.library.list(await this.owner(request)), await this.language(request)) }; }
+  @Post()
+  @ApiOperation({ summary: 'Adicionar obra ao acompanhamento', description: 'Livros aceitam cadastro manual ou Google Books e estados Quero ler/Lendo/Lido. Uma obra por usuário/referência; não cria cópia possuída. Conclusão aceita data e nota opcionais.' })
+  async create(@Req() request: Request, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.create(await this.owner(request), dto), await this.language(request)) }; }
+  @Patch(':id')
+  @ApiOperation({ summary: 'Atualizar acompanhamento privado', description: 'Para livros, altera estado de leitura, data, nota e anotações. Voltar de Lido remove os dados de conclusão. Somente dono; não altera exemplares da Minha Coleção.' })
+  async update(@Req() request: Request, @Param('id') id: string, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.update(await this.owner(request), id, dto), await this.language(request)) }; }
   @Delete(':id') @HttpCode(204) async remove(@Req() request: Request, @Param('id') id: string) { await this.library.remove(await this.owner(request), id); }
   @Post(':id/archive') @HttpCode(200) async archive(@Req() request: Request, @Param('id') id: string, @Body() dto: ArchiveDto) { return { item: await this.catalog.localize(await this.library.archive(await this.owner(request), id, dto.archived), await this.language(request)) }; }
 }
-@Module({ imports: [AuthModule, CatalogModule, EpisodesModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })
+@Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })
 export class LibraryModule {}
 
 
