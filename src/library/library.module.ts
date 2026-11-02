@@ -43,6 +43,7 @@ class LibraryItem {
   @Prop({ default: '' }) favoriteActorPhoto!: string;
   @Prop({ type: [String], default: [] }) genres!: string[];
   @Prop({ default: '', maxlength: 60 }) platform!: string;
+  @Prop({ default: 0, min: 0, max: 6000000 }) playtimeMinutes!: number;
   @Prop() catalogKey?: string;
   @Prop() catalogId?: string;
   @Prop() coverUrl?: string;
@@ -117,6 +118,8 @@ class ItemDto {
   @IsOptional() @IsArray() @ArrayMaxSize(8) @IsString({ each: true }) @MaxLength(60, { each: true }) genres?: string[];
   @ApiProperty({ type: String, required: false, maxLength: 60 })
   @IsOptional() @IsString() @MaxLength(60) platform?: string;
+  @ApiProperty({ type: 'integer', required: false, minimum: 0, maximum: 6000000, description: 'Tempo total jogado em minutos, exclusivo de jogos. Ausente preserva o valor na edição; zero limpa. Não entra no ranking de séries.' })
+  @IsOptional() @IsInt() @Min(0) @Max(6000000) playtimeMinutes?: number;
   @ApiProperty({ type: String, required: false })
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) completedOn?: string;
   @ApiProperty({ type: Number, required: false, minimum: 0, maximum: 5 })
@@ -255,7 +258,7 @@ export class LibraryService implements OnModuleInit {
     }));
     return { sections };
   }
-  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), platform: item.kind === 'game' ? item.platform || '' : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
+  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
   private id(value: string) { if (!/^[a-f0-9]{24}$/i.test(value)) throw new BadRequestException('Item inválido.'); return value; }
   async list(ownerId: string) {
     const items = await this.items.find({ ownerId }).sort({ updatedAt: -1, _id: -1 }).exec();
@@ -447,7 +450,7 @@ export class LibraryService implements OnModuleInit {
     const details = stored ? this.metadata(stored) : catalogId ? catalogId.startsWith('googlebooks:book:') ? await this.books.detail(catalogId) : await this.catalog.detail(catalogId) : undefined;
     if (details && details.kind !== dto.kind) throw new BadRequestException('A categoria não corresponde ao título selecionado.');
     // Acompanhamento de leitura registra intenção/progresso; nunca cria ou altera exemplares no acervo.
-    const payload = { ...manual, ...details, ...(dto.kind === 'book' ? { bookMetadataVersion: catalogId ? 1 : 0 } : {}), genres: [...new Set((dto.kind === 'game' ? dto.genres ?? details?.genres ?? [] : details?.genres ?? manual.genres ?? []).map(value => value.trim()).filter(Boolean))], platform: dto.kind === 'game' ? (dto.platform || '').trim() : '' };
+    const payload = { ...manual, ...details, ...(dto.kind === 'book' ? { bookMetadataVersion: catalogId ? 1 : 0 } : {}), genres: [...new Set((dto.kind === 'game' ? dto.genres ?? details?.genres ?? [] : details?.genres ?? manual.genres ?? []).map(value => value.trim()).filter(Boolean))], playtimeMinutes: dto.kind === 'game' ? dto.playtimeMinutes ?? 0 : 0, platform: dto.kind === 'game' ? (dto.platform || '').trim() : '' };
     const completion = await this.completion(dto, undefined, catalogId);
     const allEpisodes = dto.status === 'completed' && payload.kind === 'series' && details?.catalogId?.startsWith('tmdb:series:') ? await this.episodes.prepareCompletion(details.catalogId!) : null;
     const catalogKey = await this.remember(payload);
@@ -461,8 +464,9 @@ export class LibraryService implements OnModuleInit {
     if ((existing.catalogId ? existing.kind : dto.kind) === 'movie' && dto.status === 'active') dto.status = 'planned';
     if (dto.catalogId && dto.catalogId !== existing.catalogId) throw new BadRequestException('Não é possível trocar a referência deste título.');
     const allEpisodes = dto.status === 'completed' && existing.kind === 'series' && existing.catalogId?.startsWith('tmdb:series:') && (existing.status !== 'completed' || !existing.episodesCompletedAt) ? await this.episodes.prepareCompletion(existing.catalogId) : null;
+    // Tempo jogado pertence ao acompanhamento e permanece ao mudar o status, mesmo sem avaliação de conclusão.
     const changes = existing.catalogId ? { status: dto.status, notes: dto.notes ?? '', genres: existing.kind === 'book' ? existing.genres : dto.genres ?? existing.genres } : { title: dto.title, kind: dto.kind, status: dto.status, notes: dto.notes ?? '', genres: dto.genres ?? existing.genres };
-    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { ...changes, platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
+    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { ...changes, playtimeMinutes: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? dto.playtimeMinutes ?? existing.playtimeMinutes ?? 0 : 0, platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
     if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); }
     const key = await this.remember(item);
