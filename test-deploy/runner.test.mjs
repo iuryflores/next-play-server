@@ -1,13 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { settings, ssmParameters } from '../scripts/deploy-config.mjs';
 
 const posix = path => process.platform === 'win32' ? path.replaceAll('\\', '/').replace(/^([A-Z]):/i, (_, drive) => `/${drive.toLowerCase()}`) : path;
 const bash = process.env.DEPLOY_TEST_BASH || (process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash');
+
+test('diagnóstico publica mensagens seguras em linhas reais de stdout e stderr', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nextplay-diagnostic-'));
+  try {
+    const file = join(dir, 'result.json');
+    writeFileSync(file, JSON.stringify({ code: 1, stdout: 'ruído\n[nextplay] etapa pública\n', stderr: 'SMTP_PASS=segredo\r\n[nextplay] falha pública\r\n' }));
+    const script = readFileSync(new URL('../scripts/deploy-ssm-runner.sh', import.meta.url), 'utf8');
+    const code = script.match(/node -e '([^']+)'/)[1];
+    const result = spawnSync(process.execPath, ['-e', code, file], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /etapa pública/);
+    assert.match(result.stdout, /falha pública/);
+    assert.ok(!result.stdout.includes('segredo'));
+    assert.ok(!result.stdout.includes('ruído'));
+  } finally { rmSync(dir, { recursive: true }); }
+});
 test('comando SSM externo e script interno passam na análise do Bash', () => {
   const command = ssmParameters({ releaseId: 'a'.repeat(40) + '-1-1', bucket: 'test-bucket', region: 'us-east-1', user: 'ubuntu', name: 'nextplay-api', checksum: 'b'.repeat(64) }).commands[0];
   const inner = command.slice("bash -c '".length, -1).replaceAll("'\\''", "'");
