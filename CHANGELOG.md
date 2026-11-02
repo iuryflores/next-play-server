@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.0](https://github.com/iuryflores/next-play-server/compare/v0.4.0...v0.5.0) (2026-11-02)
+
+
+### Features
+
+* aprimora conquistas, rankings e navegação ([a8d0544](https://github.com/iuryflores/next-play-server/commit/a8d054494367a84cc3abd850bc5afc07f652807f))
+* exibe fotos e facilita convites nos rankings ([945e9fc](https://github.com/iuryflores/next-play-server/commit/945e9fc2eeb3c78952ceac049fbed303dabd2080))
+* registra tempo jogado no acompanhamento de jogos ([01f4468](https://github.com/iuryflores/next-play-server/commit/01f44685fbe6addc62675b32cb80a2f74372fc29))
+
 ## [0.4.0](https://github.com/iuryflores/next-play-server/compare/v0.3.0...v0.4.0) (2026-11-02)
 
 
