@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/iuryflores/next-play-server/compare/v0.3.0...v0.4.0) (2026-11-02)
+
+
+### Features
+
+* add achievement progression and catalog previews ([b100d3a](https://github.com/iuryflores/next-play-server/commit/b100d3a0d37d1c74af26e20d247bcde4b4747c9b))
+
 ## [0.3.0](https://github.com/iuryflores/next-play-server/compare/v0.2.0...v0.3.0) (2026-11-01)
 
 
