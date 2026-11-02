@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/iuryflores/next-play-server/compare/v0.5.1...v0.5.2) (2026-11-02)
+
+
+### Bug Fixes
+
+* revalida releases desatualizadas e diagnostica falhas SSM ([1feb99b](https://github.com/iuryflores/next-play-server/commit/1feb99b02971516f719c9d2c821f599fe217c07c))
+
 ## [0.5.1](https://github.com/iuryflores/next-play-server/compare/v0.5.0...v0.5.1) (2026-11-02)
 
 
