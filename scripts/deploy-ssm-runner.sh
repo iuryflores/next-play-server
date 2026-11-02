@@ -44,6 +44,9 @@ for attempt in {1..210}; do
       aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$EC2_INSTANCE_ID" --query '{stdout:StandardOutputContent,stderr:StandardErrorContent,code:ResponseCode}' --output json > "$task_dir/result.json"
       # Só mensagens emitidas por nossos scripts; nunca publicar logs brutos/pm2_env.
       node scripts/deploy-diagnostic.mjs "$task_dir/result.json"
+      # Output do plugin inclui falhas do agente que podem não chegar a stdout/stderr.
+      aws ssm list-command-invocations --region "$AWS_REGION" --command-id "$command_id" --details --query 'CommandInvocations[0].CommandPlugins[0].{stderr:Output,code:ResponseCode}' --output json > "$task_dir/plugin.json"
+      node scripts/deploy-diagnostic.mjs "$task_dir/plugin.json"
       exit 1 ;;
     Pending|InProgress|Delayed|Cancelling) sleep 5 ;;
     *) echo '[nextplay] Status SSM inesperado.' >&2; exit 1 ;;

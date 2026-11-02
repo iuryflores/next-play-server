@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 
-const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const result = JSON.parse(readFileSync(process.argv[2], 'utf8')) || {};
 console.log(`[nextplay] Código remoto: ${Number.isInteger(result.code) ? result.code : 'indisponível'}`);
 console.log(`[nextplay] Tamanho da saída: stdout=${String(result.stdout ?? '').length}, stderr=${String(result.stderr ?? '').length}`);
 // Remove os valores conhecidos do ambiente antes de publicar erros de sistema; nunca publica stdout bruto ou logs PM2.
