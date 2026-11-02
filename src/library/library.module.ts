@@ -1,3 +1,4 @@
+import { RewatchModule, RewatchService, RewatchDto, viewingProgressId, type Viewing } from '../rewatches/rewatches.module';
 import { gameStatusEvent, type GameStatusEvent } from './game-status-event';
 import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation, ApiQuery, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from './vote-identity';
@@ -33,6 +34,9 @@ class LibraryItem {
   @Prop({ required: true, enum: statuses }) status!: string;
   @Prop({ enum: ['none', 'high', 'medium', 'low'], default: 'none' }) priority!: string;
   @Prop({ default: false }) archived!: boolean;
+  @Prop({ default: false }) rewatchWanted!: boolean;
+  @Prop({ type: String, default: null }) rewatchActiveId?: string | null;
+  @Prop({ type: [Object], default: undefined }) rewatches?: Viewing[];
   @Prop({ default: '', maxlength: 1000 }) notes!: string;
   @Prop({ default: false }) watchedDateUnknown!: boolean;
   @Prop({ type: String }) completedOn?: string | null;
@@ -133,6 +137,8 @@ class GameStatusHistoryQuery {
   @IsOptional() @IsUUID() before?: string;
 }
 class ItemDto {
+  @ApiProperty({ type: String, required: false, description: 'ID da repetição ativa ou original. Obrigatório para editar uma repetição em andamento; uma aba com visualização diferente recebe 409.' })
+  @ValidateIf((_object, value) => value !== undefined) @Matches(/^(original|[a-f0-9]{24})$/i) viewingId?: string;
   @ApiProperty({ required: false, enum: ['none', 'high', 'medium', 'low'], description: 'Prioridade do backlog. Ausente preserva na edição; no cadastro usa none.' })
   @ValidateIf((_object, value) => value !== undefined) @IsIn(['none', 'high', 'medium', 'low']) priority?: string;
   @ApiProperty({ type: String, required: true, minLength: 1, maxLength: 200 })
@@ -167,7 +173,7 @@ class ItemDto {
 }
 @Injectable()
 export class LibraryService implements OnModuleInit {
-  constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService, private readonly books: BooksService) {}
+  constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService, private readonly books: BooksService, private readonly rewatches: RewatchService) {}
   async onModuleInit() {
     await Promise.all([this.items.init(), this.titles.init(), this.comments.init()]);
     // Backfill metadata already saved locally; never call providers at startup.
@@ -311,7 +317,7 @@ export class LibraryService implements OnModuleInit {
     }));
     return { sections };
   }
-  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: !item.watchedDateUnknown && ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), priority: item.priority || 'none', parentGameCatalogId: item.kind === 'game' ? item.parentGameCatalogId : undefined, platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, lastPlayedOn: item.kind === 'game' ? item.lastPlayedOn || null : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), watchedDateUnknown: Boolean(item.watchedDateUnknown), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
+  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: !item.watchedDateUnknown && ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), rewatchWanted: Boolean(item.rewatchWanted), rewatching: Boolean(item.rewatchActiveId), rewatchActiveId: item.rewatchActiveId || null, rewatchCount: item.rewatches?.length || 0, watchedBefore: Boolean(item.rewatches?.length), priority: item.priority || 'none', parentGameCatalogId: item.kind === 'game' ? item.parentGameCatalogId : undefined, platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, lastPlayedOn: item.kind === 'game' ? item.lastPlayedOn || null : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.rewatchActiveId ? 'active' : item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), watchedDateUnknown: Boolean(item.watchedDateUnknown), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
   private id(value: string) { if (!/^[a-f0-9]{24}$/i.test(value)) throw new BadRequestException('Item inválido.'); return value; }
   async list(ownerId: string) {
     const items = await this.items.find({ ownerId }, { gameSessions: 0, gameStatusHistory: 0 }).sort({ updatedAt: -1, _id: -1 }).exec();
@@ -340,15 +346,15 @@ export class LibraryService implements OnModuleInit {
     if (!series.length) return items.map(item => this.publicItem(item));
     const [seasons, progress] = await Promise.all([
       this.connection.collection('series_seasons').find({ catalogId: { $in: series.map(item => item.catalogId) }, number: { $gt: 0 } }, { projection: { catalogId: 1, number: 1, loaded: 1, total: 1, 'episodes.number': 1, 'episodes.name': 1, 'episodes.airDate': 1 } }).sort({ number: 1 }).toArray(),
-      this.connection.collection('episode_progress').find({ itemId: { $in: series.map(item => item._id) }, season: { $gt: 0 } }, { projection: { itemId: 1, season: 1, episode: 1, watchedAt: 1 } }).toArray(),
+      this.connection.collection('episode_progress').find({ itemId: { $in: series.map(item => viewingProgressId(item)) }, season: { $gt: 0 } }, { projection: { itemId: 1, season: 1, episode: 1, watchedAt: 1 } }).toArray(),
     ]);
     return items.map(item => {
       if (!series.some(value => value.id === item.id)) return this.publicItem(item);
       const available = seasons.filter(season => season.catalogId === item.catalogId);
-      const latest = progress.filter(row => row.itemId.toString() === item.id && row.watchedAt).sort((a, b) => new Date(b.watchedAt).getTime() - new Date(a.watchedAt).getTime() || b.season - a.season || b.episode - a.episode)[0];
+      const latest = progress.filter(row => row.itemId.toString() === viewingProgressId(item).toString() && row.watchedAt).sort((a, b) => new Date(b.watchedAt).getTime() - new Date(a.watchedAt).getTime() || b.season - a.season || b.episode - a.episode)[0];
       const base = this.publicItem(item);
       const lastWatchedAt = latest && (!base.lastWatchedAt || new Date(latest.watchedAt) >= new Date(base.lastWatchedAt)) ? latest.watchedAt : base.lastWatchedAt;
-      const watched = new Set(progress.filter(row => row.itemId.toString() === item.id).map(row => row.season + ':' + row.episode));
+      const watched = new Set(progress.filter(row => row.itemId.toString() === viewingProgressId(item).toString()).map(row => row.season + ':' + row.episode));
       let next: { season: number; episode: number | null; name?: string; airDate?: string } | null = null;
       let count = 0;
       for (const season of available) {
@@ -365,7 +371,7 @@ export class LibraryService implements OnModuleInit {
       const pendingReleased = available.flatMap(season => (season.episodes || []).filter((episode: { number: number; airDate?: string }) => (!episode.airDate || episode.airDate <= today) && !watched.has(season.number + ':' + episode.number)).map((episode: { number: number; name: string; airDate?: string }) => ({ season: season.number, episode: episode.number, name: episode.name, airDate: episode.airDate })));
       const caughtUp = watched.size > 0 && available.length > 0 && available.every(season => season.loaded) && pendingReleased.length === 0;
       if (pendingReleased.length) next = pendingReleased[0];
-      return { ...base, caughtUp, lastWatchedAt, lastWatchedEpisode: latest ? { season: latest.season, episode: latest.episode } : undefined, status: item.status === 'completed' ? 'completed' : watched.size > 0 ? 'active' : 'planned', inProgress: item.status !== 'completed' && watched.size > 0 && !caughtUp, episodeProgress: { next, watched: count, total: available.reduce((sum, season) => sum + (season.loaded ? (season.episodes || []).filter((episode: { airDate?: string }) => !episode.airDate || episode.airDate <= new Date().toISOString().slice(0, 10)).length : season.total || 0), 0), initialized: available.length > 0 } };
+      return { ...base, caughtUp, lastWatchedAt, lastWatchedEpisode: latest ? { season: latest.season, episode: latest.episode } : undefined, status: item.rewatchActiveId ? 'active' : item.status === 'completed' ? 'completed' : watched.size > 0 ? 'active' : 'planned', inProgress: Boolean(item.rewatchActiveId) || (item.status !== 'completed' && watched.size > 0 && !caughtUp), episodeProgress: { next, watched: count, total: available.reduce((sum, season) => sum + (season.loaded ? (season.episodes || []).filter((episode: { airDate?: string }) => !episode.airDate || episode.airDate <= new Date().toISOString().slice(0, 10)).length : season.total || 0), 0), initialized: available.length > 0 } };
     });
   }
   async upcoming(ownerId: string, id: string, language: string) {
@@ -524,6 +530,15 @@ export class LibraryService implements OnModuleInit {
   async update(ownerId: string, id: string, dto: ItemDto) {
     const existing = await this.items.findOne({ _id: this.id(id), ownerId }).exec();
     if (!existing) throw new NotFoundException('Item não encontrado.');
+    if ((dto.viewingId !== undefined || existing.rewatchActiveId) && (dto.viewingId || 'original') !== (existing.rewatchActiveId || 'original')) throw new ConflictException('A visualização mudou. Atualize o acompanhamento.');
+    // Uma nova visualização nunca regrava a conclusão, nota ou votos da primeira.
+    if (existing.rewatchActiveId) {
+      if (dto.kind !== existing.kind || !['active', 'completed'].includes(dto.status)) throw new BadRequestException('Use o acompanhamento da visualização atual para reassistir.');
+      if (dto.status === 'completed') await this.rewatches.change(ownerId, id, { action: 'finish', expectedCount: existing.rewatches?.length || 0, watchedDateUnknown: dto.watchedDateUnknown, completedOn: dto.completedOn });
+      await this.items.updateOne({ _id: existing._id, ownerId }, { $set: { notes: dto.notes ?? existing.notes, ...(dto.priority !== undefined ? { priority: dto.priority } : {}) } });
+      return (await this.list(ownerId)).find(item => item.id === id)!;
+    }
+    if (existing.rewatches?.length && (dto.kind !== existing.kind || dto.status !== existing.status)) throw new BadRequestException('Use Quero rever para iniciar outra visualização sem apagar o histórico.');
     if ((existing.catalogId ? existing.kind : dto.kind) === 'movie' && dto.status === 'active') dto.status = 'planned';
     if (dto.catalogId && dto.catalogId !== existing.catalogId) throw new BadRequestException('Não é possível trocar a referência deste título.');
     const allEpisodes = dto.status === 'completed' && existing.kind === 'series' && existing.catalogId?.startsWith('tmdb:series:') && (existing.status !== 'completed' || !existing.episodesCompletedAt) ? await this.episodes.prepareCompletion(existing.catalogId) : null;
@@ -594,17 +609,38 @@ export class LibraryService implements OnModuleInit {
  
     const item = await this.items.findOneAndDelete({ _id: this.id(id), ownerId }).exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
+    await this.connection.collection('episode_progress').deleteMany({ itemId: { $in: [item._id, ...(item.rewatches || []).map(cycle => new Types.ObjectId(cycle.id))] } });
   }
 }
 @ApiTags('library')
 @ApiCookieAuth('session')
 @Controller('library')
 class LibraryController {
-  constructor(private readonly library: LibraryService, private readonly auth: AuthService, private readonly catalog: CatalogService) {}
+  constructor(private readonly library: LibraryService, private readonly auth: AuthService, private readonly catalog: CatalogService, private readonly rewatches: RewatchService) {}
   private async language(request: Request) { return (await this.auth.forRequest(request)).language; }
   private async owner(request: Request) {
     if (request.method !== 'GET' && request.headers.origin !== getConfig().origin) throw new ForbiddenException('Origem da requisição não permitida.');
     return (await this.auth.forRequest(request)).id;
+  }
+  @Get(':id/rewatches')
+  @ApiOperation({ summary: 'Histórico privado de visualizações de filmes e séries', description: 'A primeira visualização mantém as datas e episódios existentes. Cada repetição possui início e conclusão próprios, com episódios e datas separados. Sem alterar XP ou contagens por títulos distintos.' })
+  @ApiOkResponse({ description: 'Até dez entries em ordem decrescente e nextBefore (número ou null). Cada entrada: id, number, original, active, startedAt opcional, completedAt/completedOn opcionais, watchedDateUnknown e episodes (season, episode, watchedAt nullable, watchedDateUnknown).' })
+  @ApiResponse({ status: 404, description: 'Título inexistente ou de outra conta.' })
+  @ApiQuery({ name: 'before', required: false, type: Number, description: 'nextBefore da página anterior. Inteiro de 2 a 1001; dez visualizações por página.' })
+  async rewatchHistory(@Req() request: Request, @Param('id') id: string, @Query('before') before?: string) {
+    if (before !== undefined && (!/^\d+$/.test(before) || Number(before) < 2 || Number(before) > 1001)) throw new BadRequestException('Cursor de visualizações inválido.');
+    return this.rewatches.history(await this.owner(request), id, before === undefined ? undefined : Number(before));
+  }
+  @Post(':id/rewatches') @HttpCode(200)
+  @ApiOperation({ summary: 'Planejar, iniciar ou concluir outra visualização', description: 'Somente filmes e séries já assistidos e não arquivados. Mantém a primeira conclusão, avaliações e episódios. Uma visualização ativa por título; até 1000 repetições. expectedCount evita duplicações concorrentes. Séries TMDB só encerram após assistir todos os episódios regulares já lançados; séries manuais encerram sem progresso por episódio; também é possível Concluir série no acompanhamento. Não concede XP adicional.' })
+  @ApiOkResponse({ description: 'item com rewatchWanted, rewatching, rewatchCount, watchedBefore e progresso da visualização atual.' })
+  @ApiResponse({ status: 400, description: 'Ação, data, categoria ou estado inválidos; série com episódios pendentes.' })
+  @ApiResponse({ status: 409, description: 'Histórico alterado ou visualização já em andamento.' })
+  @ApiResponse({ status: 404, description: 'Título inexistente ou de outra conta.' })
+  async rewatch(@Req() request: Request, @Param('id') id: string, @Body() dto: RewatchDto) {
+    const owner = await this.owner(request);
+    await this.rewatches.change(owner, id, dto);
+    return { item: await this.catalog.localize((await this.library.list(owner)).find(item => item.id === id)!, await this.language(request), false) };
   }
   @Get(':id/community') async community(@Req() request: Request, @Param('id') id: string, @Query('before') before?: string) { return this.library.community(await this.owner(request), id, before); }
   @Get(':id/cast') async cast(@Req() request: Request, @Param('id') id: string, @Query('season') season?: string, @Query('episode') episode?: string) { return this.library.cast(await this.owner(request), id, await this.language(request), season === undefined ? undefined : Number(season), episode === undefined ? undefined : Number(episode)); }
@@ -683,7 +719,7 @@ class LibraryController {
   @ApiResponse({ status: 409, description: 'Status ou arquivamento alterado simultaneamente; atualize antes de reenviar.' })
   @Post(':id/archive') @HttpCode(200) async archive(@Req() request: Request, @Param('id') id: string, @Body() dto: ArchiveDto) { return { item: await this.catalog.localize(await this.library.archive(await this.owner(request), id, dto.archived), await this.language(request)) }; }
 }
-@Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })
+@Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, RewatchModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })
 export class LibraryModule {}
 
 
