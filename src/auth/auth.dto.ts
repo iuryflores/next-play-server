@@ -17,8 +17,14 @@ export class ResetPasswordDto {
   @ApiProperty({ minLength: 12, maxLength: 128, format: 'password' })
   @IsString() @MinLength(12) @MaxLength(128) password!: string;
 }
-export class PreferencesDto { @ApiProperty({ type: String, required: true, enum: ['pt-BR', 'en-US', 'es-ES'] })
-  @IsIn(['pt-BR', 'en-US', 'es-ES']) language!: string; }
+export class PreferencesDto {
+  @ApiProperty({ required: false, enum: ['pt-BR', 'en-US', 'es-ES'], description: 'Campos ausentes preservam a preferência atual.' })
+  @ValidateIf((_object, value) => value !== undefined) @IsIn(['pt-BR', 'en-US', 'es-ES']) language?: string;
+  @ApiProperty({ required: false, enum: ['system', 'light', 'dark'], description: 'Tema salvo na conta. system acompanha o dispositivo; padrão de contas antigas é system.' })
+  @ValidateIf((_object, value) => value !== undefined) @IsIn(['system', 'light', 'dark']) theme?: string;
+  @ApiProperty({ required: false, enum: ['compact', 'details'], description: 'Densidade da visão geral: compact = enxuto; details = estendido. Padrão de contas antigas: compact.' })
+  @ValidateIf((_object, value) => value !== undefined) @IsIn(['compact', 'details']) collectionDensity?: string;
+}
 
 export class LoginDto {
   @ApiProperty({ type: String, required: true, maxLength: 254, format: 'email' })

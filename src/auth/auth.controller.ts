@@ -56,10 +56,10 @@ export class AuthController {
     response.setHeader('Cache-Control', 'no-store');
     response.redirect(302, await this.auth.avatarUrl(this.cookie(request)));
   }
-  @ApiOperation({ summary: 'Salvar o idioma da conta' })
+  @ApiOperation({ summary: 'Salvar preferências da conta', description: 'Atualiza parcialmente idioma, tema e densidade da visão geral no banco da sessão. Campos ausentes são preservados; corpo vazio apenas retorna o usuário atual. Respostas de sessão incluem theme e collectionDensity.' })
   @ApiCookieAuth('session')
   @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
-  @Post('preferences') @HttpCode(200) async preferences(@Body() dto: PreferencesDto, @Req() request: Request) { return { user: await this.auth.preferences(this.cookie(request), dto.language) }; }
+  @Post('preferences') @HttpCode(200) async preferences(@Body() dto: PreferencesDto, @Req() request: Request) { return { user: await this.auth.preferences(this.cookie(request), dto) }; }
   @ApiOperation({ summary: 'Atualizar perfil e foto no S3' })
   @ApiCookieAuth('session')
   @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })

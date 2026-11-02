@@ -4,7 +4,7 @@ import { Model } from 'mongoose';
 import { User, Session, AuthAttempt, type UserDocument } from './auth.schemas';
 import { hashPassword, hashToken, randomToken, verifyPassword } from './password';
 import { getConfig } from '../config';
-import type { LoginDto, RegisterDto, ProfileDto } from './auth.dto';
+import type { LoginDto, RegisterDto, ProfileDto, PreferencesDto } from './auth.dto';
 import { AvatarStorage } from './avatar-storage';
 import { EmailConfirmation } from './email-confirmation';
 import type { Request } from 'express';
@@ -36,16 +36,20 @@ export class AuthService implements OnModuleInit {
     await Promise.all([this.users.init(), this.sessions.init(), this.attempts.init()]);
     this.dummyHash = await hashPassword(randomToken());
   }
-  private publicUser(user: UserDocument) { return { requiresVerification: Boolean(user.verificationRequired && !user.emailVerifiedAt), id: user.id as string, email: user.email, displayName: user.displayName || '', avatar: user.avatarKey ? `/api/auth/avatar?v=${encodeURIComponent(user.avatarKey.split('/').pop()!)}` : user.avatar || '', provider: 'email' as const, language: user.language || 'pt-BR' }; }
+  private publicUser(user: UserDocument) { return { requiresVerification: Boolean(user.verificationRequired && !user.emailVerifiedAt), id: user.id as string, email: user.email, displayName: user.displayName || '', avatar: user.avatarKey ? `/api/auth/avatar?v=${encodeURIComponent(user.avatarKey.split('/').pop()!)}` : user.avatar || '', provider: 'email' as const, language: user.language || 'pt-BR', theme: user.theme || 'system', collectionDensity: user.collectionDensity || 'compact' }; }
   async avatarUrl(token?: string) {
     const current = await this.me(token);
     const user = await this.users.findById(current.id).exec();
     if (!user?.avatarKey) throw new BadRequestException('Foto de perfil não encontrada.');
     return this.avatars.signedUrl(user.avatarKey);
   }
-  async preferences(token: string | undefined, language: string) {
+  async preferences(token: string | undefined, dto: PreferencesDto) {
     const current = await this.me(token);
-    const user = await this.users.findByIdAndUpdate(current.id, { $set: { language } }, { returnDocument: 'after', runValidators: true }).exec();
+    // Atualizações parciais evitam que trocar o tema sobrescreva idioma ou densidade.
+    const changes = Object.fromEntries(Object.entries(dto).filter(([, value]) => value !== undefined));
+    const user = Object.keys(changes).length
+      ? await this.users.findByIdAndUpdate(current.id, { $set: changes }, { returnDocument: 'after', runValidators: true }).exec()
+      : await this.users.findById(current.id).exec();
     if (!user) throw new UnauthorizedException('Entre para continuar.');
     return this.publicUser(user);
   }

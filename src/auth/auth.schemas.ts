@@ -17,6 +17,9 @@ export class User {
   @Prop({ default: '', maxlength: 100000 }) avatar!: string;
   @Prop({ default: '' }) avatarKey!: string;
   @Prop({ default: 'pt-BR', enum: ['pt-BR', 'en-US', 'es-ES'] }) language!: string;
+  // Preferências pertencem à conta para acompanhar o usuário em qualquer ambiente ou dispositivo.
+  @Prop({ default: 'system', enum: ['system', 'light', 'dark'] }) theme!: string;
+  @Prop({ default: 'compact', enum: ['compact', 'details'] }) collectionDensity!: string;
   @Prop({ required: true, unique: true, lowercase: true, trim: true }) email!: string;
   @Prop({ required: true, select: false }) passwordHash!: string;
 }

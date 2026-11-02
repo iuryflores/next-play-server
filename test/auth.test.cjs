@@ -42,7 +42,7 @@ test('NestJS authentication with isolated MongoDB', async t => {
     const response = await request('/auth/register', 'POST', account);
     assert.equal(response.status, 201);
     const { user } = await response.json();
-    assert.deepEqual(Object.keys(user).sort(), ['avatar', 'displayName', 'email', 'id', 'language', 'provider', 'requiresVerification']); assert.equal(user.requiresVerification, false); assert.equal(user.language, 'pt-BR'); userId = user.id;
+    assert.deepEqual(Object.keys(user).sort(), ['avatar', 'collectionDensity', 'displayName', 'email', 'id', 'language', 'provider', 'requiresVerification', 'theme']); assert.equal(user.requiresVerification, false); assert.equal(user.language, 'pt-BR'); userId = user.id;
     assert.match(response.headers.get('set-cookie'), /HttpOnly/);
     assert.match(response.headers.get('set-cookie'), /SameSite=Lax/);
     firstCookie = cookieFrom(response);
