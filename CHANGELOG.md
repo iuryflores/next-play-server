@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/iuryflores/next-play-server/compare/v0.8.0...v0.9.0) (2026-11-02)
+
+
+### Features
+
+* adiciona reassistidas e desafios por plataforma ([c2d6a23](https://github.com/iuryflores/next-play-server/commit/c2d6a236ee669a6ad7e94fe9f2e4acf8da8b07c8))
+
 ## [0.8.0](https://github.com/iuryflores/next-play-server/compare/v0.7.0...v0.8.0) (2026-11-02)
 
 
