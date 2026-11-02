@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.7](https://github.com/iuryflores/next-play-server/compare/v0.5.6...v0.5.7) (2026-11-02)
+
+
+### Bug Fixes
+
+* verifica execução mínima do agente quando SSM não retorna logs ([80121a5](https://github.com/iuryflores/next-play-server/commit/80121a5234fc929dfdcadcdfabd9edf9ba846a4b))
+
 ## [0.5.6](https://github.com/iuryflores/next-play-server/compare/v0.5.5...v0.5.6) (2026-11-02)
 
 
