@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/iuryflores/next-play-server/compare/v0.9.0...v0.10.0) (2026-11-02)
+
+
+### Features
+
+* adiciona conversas com respostas e ranking por XP ([986f598](https://github.com/iuryflores/next-play-server/commit/986f598a94d6e0eca82fc1e4778689f1fd9653c0))
+
 ## [0.9.0](https://github.com/iuryflores/next-play-server/compare/v0.8.0...v0.9.0) (2026-11-02)
 
 
