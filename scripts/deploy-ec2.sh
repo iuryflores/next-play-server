@@ -3,20 +3,21 @@ set -Eeuo pipefail
 umask 077
 # O runner publica apenas mensagens prefixadas; o diagnóstico nunca inclui comandos ou valores do .env.
 phase='preparação do usuário'
+echo '[nextplay] Iniciando ativação da aplicação.'
 trap 'code=$?; printf "[nextplay] Falha da aplicação na etapa: %s (código %s).\n" "$phase" "$code" >&2; exit "$code"' ERR
 release_id=${1:?Release ausente}
 staging=${2:?Staging ausente}
 name=${3:?Nome PM2 ausente}
-[[ "$release_id" =~ ^[a-f0-9]{40}-[0-9]+-[0-9]+$ && "$name" =~ ^nextplay-[a-z0-9_-]+$ ]] || exit 1
-[[ $(id -u) != 0 ]] || exit 1
+[[ "$release_id" =~ ^[a-f0-9]{40}-[0-9]+-[0-9]+$ && "$name" =~ ^nextplay-[a-z0-9_-]+$ ]] || { echo '[nextplay] Identificador de release ou processo inválido.' >&2; exit 1; }
+[[ $(id -u) != 0 ]] || { echo '[nextplay] Ativação não pode executar como root.' >&2; exit 1; }
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 phase='carregamento do Node e PM2'
 if [[ -s "$NVM_DIR/nvm.sh" ]]; then source "$NVM_DIR/nvm.sh"; nvm use 22 >/dev/null; fi
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);if(a!==22||b<13)process.exit(1)' || { echo '[nextplay] Instale Node 22.13+ da linha 22.' >&2; exit 1; }
 command -v pm2 >/dev/null
 kind=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).kind' "$staging/deploy-settings.json")
-[[ "$kind" == client || "$kind" == server ]] || exit 1
-[[ "$staging" == "/tmp/nextplay-$kind-$release_id" ]] || exit 1
+[[ "$kind" == client || "$kind" == server ]] || { echo '[nextplay] Categoria de deploy inválida.' >&2; exit 1; }
+[[ "$staging" == "/tmp/nextplay-$kind-$release_id" ]] || { echo '[nextplay] Caminho temporário fora da release esperada.' >&2; exit 1; }
 port=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).port' "$staging/deploy-settings.json")
 app_root="$HOME/nextplay/nextplay-$kind"
 release="$app_root/releases/$release_id"
@@ -24,7 +25,7 @@ helper="$staging/deploy-config.mjs"
 mkdir -p "$app_root/releases"
 previous=$(readlink -f "$app_root/current" || true)
 if [[ -e "$app_root/current" || -L "$app_root/current" ]]; then
-  [[ -L "$app_root/current" && "$previous" == "$app_root/releases/"* && -d "$previous" ]] || exit 1
+  [[ -L "$app_root/current" && "$previous" == "$app_root/releases/"* && -d "$previous" ]] || { echo '[nextplay] current não aponta para uma release válida deste aplicativo.' >&2; exit 1; }
 fi
 phase='verificação do processo e da porta'
 pm2 ping >/dev/null

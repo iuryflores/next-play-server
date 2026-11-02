@@ -21,6 +21,7 @@ export function ssmParameters(input) {
   const script = `set -Eeuo pipefail
 umask 077
 phase='preparação e lock'
+echo '[nextplay] Iniciando preparação SSM.'
 trap 'code=$?; printf "[nextplay] Falha SSM na etapa: %s (código %s).\\n" "$phase" "$code" >&2; exit "$code"' ERR
 exec 9>/var/lock/nextplay-deploy.lock
 flock -w 600 9
