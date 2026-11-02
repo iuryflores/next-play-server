@@ -9,7 +9,50 @@ process.env.ALLOW_REGISTRATION='true';process.env.EMAIL_VERIFICATION_REQUIRED='f
 const {createApp}=require('../dist/bootstrap');
 const {getConnectionToken}=require('@nestjs/mongoose');
 const {Types}=require('mongoose');
-const {dailyEpisodeRecord,seasonInOneDay,achievements}=require('../dist/achievements/achievement-rules');
+const {dailyEpisodeRecord,seasonInOneDay,achievements,reviewMilestones}=require('../dist/achievements/achievement-rules');
+const {continuousLevel}=require('../dist/achievements/achievement-rules');
+
+test('cada ciclo de cinco estrelas soma um nível e conquistas únicas não têm níveis',()=>{
+  const targets=[5,10,25,50];
+  for(const [count,level,stars,next] of [[0,0,0,250],[5,0,0.1,250],[50,0,1,250],[100,0,2,250],[250,1,5,500],[275,1,0.5,500],[500,2,5,750],[50000,200,5,50250]]) {
+    const result=continuousLevel(targets,count);
+    assert.equal(result.progressionLevel,level);
+    assert.ok(Math.abs(result.cycleStars-stars)<0.00001);
+    assert.equal(result.nextLevelTarget,next);
+  }
+  assert.deepEqual(continuousLevel([1],100),{progressionLevel:0,cycleStars:0,nextLevelTarget:1});
+  assert.deepEqual(continuousLevel([10,25,50,100],338),{progressionLevel:0,cycleStars:3.38,nextLevelTarget:500});
+});
+
+test('todas as famílias progressivas seguem o mesmo ciclo de cinco estrelas',()=>{
+  const families=[...new Set(achievements.map(item=>item.family))];
+  for(const family of families) {
+    const targets=achievements.filter(item=>item.family===family).map(item=>item.target);
+    const unit=targets.at(-1);
+    if(targets.length===1) {
+      assert.deepEqual(continuousLevel(targets,unit*20),{progressionLevel:0,cycleStars:0,nextLevelTarget:unit},family);
+      continue;
+    }
+    // A mesma unidade vale uma estrela tanto no primeiro ciclo quanto nos próximos.
+    assert.deepEqual(continuousLevel(targets,unit),{progressionLevel:0,cycleStars:1,nextLevelTarget:unit*5},family);
+    assert.deepEqual(continuousLevel(targets,unit*3),{progressionLevel:0,cycleStars:3,nextLevelTarget:unit*5},family);
+    assert.deepEqual(continuousLevel(targets,unit*5),{progressionLevel:1,cycleStars:5,nextLevelTarget:unit*10},family);
+    assert.deepEqual(continuousLevel(targets,unit*6),{progressionLevel:1,cycleStars:1,nextLevelTarget:unit*10},family);
+    assert.deepEqual(continuousLevel(targets,unit*10),{progressionLevel:2,cycleStars:5,nextLevelTarget:unit*15},family);
+  }
+});
+
+test('sentimentos e favoritos contam avaliações distintas, identidade de ator e personagem por obra',()=>{
+  const rows=Array.from({length:5},(_,i)=>({key:'episode:'+i,scope:'series:a',label:'Série A E'+i,feeling:'loved',favoriteActorId:'tmdb:1',favoriteActorName:'Ator A',favoriteCharacter:i%2?'  Herói  ':'HERÓI'}));
+  const result=reviewMilestones([...rows,rows[0],{key:'other',scope:'series:b',label:'Série B',feeling:'liked',favoriteActorId:'tmdb:2',favoriteActorName:'Ator A',favoriteCharacter:'Herói'}]);
+  assert.equal(result.loved.length,5);
+  assert.equal(result.favoriteActor.length,5);
+  assert.equal(result.favoriteCharacter.length,5);
+  assert.ok(result.favoriteActor.every(value=>value.startsWith('Ator A — Série A')));
+  assert.deepEqual(reviewMilestones([{key:'free',scope:'a',label:'A',favoriteActorName:'Ator A'}]).favoriteActor,[]);
+  assert.deepEqual(reviewMilestones([]),{loved:[],favoriteActor:[],favoriteCharacter:[]});
+  for(const metric of ['loved','favoriteActor','favoriteCharacter']) assert.deepEqual(achievements.filter(item=>item.metric===metric).map(item=>item.target),[3,5,10,25,50]);
+});
 
 test('temporada em um dia exige todos os episódios individuais no mesmo dia civil',()=>{
   const expected=['a','b'], now=new Date('2026-11-02');
@@ -77,8 +120,10 @@ test('conquistas privadas, persistentes, idempotentes e ligadas ao consumo/posse
   assert.deepEqual(earned.map(item=>item.id).sort(),['cinephile-10','collector-10','first-play-1','reader-5']);
   assert.equal(await db.collection('achievement_awards').countDocuments({ownerId}),4,'sincronizações concorrentes não duplicam medalhas');
   const cinephile=state.achievements.find(item=>item.id==='cinephile-10');
+  assert.deepEqual(cinephile.evidence,Array.from({length:10},(_,i)=>'Filme '+i));
+  assert.equal(state.achievements.find(item=>item.id==='cinephile-25').evidence,null);
   assert.equal(cinephile.level,1);assert.equal(cinephile.levels,4);
-  assert.equal(state.achievements.length,54);
+  assert.equal(state.achievements.length,69);
   await db.collection('library_items').updateMany({ownerId,kind:'movie'},{$set:{year:'1999',stars:4}});
   // Simula identidade legada equivalente; o índice atual já impede catalogId duplicado.
   await db.collection('library_items').insertOne({ownerId,kind:'movie',status:'completed',title:'Cópia do filme',catalogKey:'tmdb:movie:1',year:'1999',stars:5});
@@ -109,7 +154,9 @@ test('conquistas privadas, persistentes, idempotentes e ligadas ao consumo/posse
   assert.equal(after.achievements.find(item=>item.id==='binge-10').unlockedAt,null);
   for(let i=6;i<=10;i++)await watch(3,i);
   after=await sync();assert.ok(after.achievements.find(item=>item.id==='binge-10').unlockedAt);
+  assert.ok(after.achievements.find(item=>item.id==='binge-10').evidence.some(value=>value.startsWith('Série de teste — T3 E10 — ')));
   assert.ok(after.achievements.find(item=>item.id==='day-season-1').unlockedAt,'temporada 3 foi vista individualmente no mesmo dia');
+  assert.deepEqual(after.achievements.find(item=>item.id==='day-season-1').evidence,['Série de teste — T3']);
   assert.ok(after.achievements.find(item=>item.id==='episode-voyager-25').unlockedAt,'episódios acumulados incluem lotes e legado');
   // A rota /complete recupera episódios de séries legadas já marcadas como concluídas.
   await db.collection('library_items').updateOne({_id:seriesId},{$set:{status:'completed',completedAt:new Date()},$unset:{episodesCompletedAt:''}});
@@ -121,12 +168,41 @@ test('conquistas privadas, persistentes, idempotentes e ligadas ao consumo/posse
   await db.collection('library_items').deleteMany({ownerId,kind:{$in:['movie','book']}});
   await db.collection('collector_copies').deleteMany({ownerId});
   after=await sync();assert.equal(after.achievements.find(item=>item.id==='cinephile-10').current,0);assert.ok(after.achievements.find(item=>item.id==='cinephile-10').unlockedAt);assert.equal(after.selectedId,'cinephile-10');
+  assert.deepEqual(after.achievements.find(item=>item.id==='cinephile-10').evidence,cinephile.evidence,'evidência original permanece após edição e exclusão');
   assert.equal((await request('/achievements/title','PATCH',{achievementId:null},a.cookie)).status,200);
   assert.equal((await sync()).selectedId,null);
+  // Um registro antigo sem evidência continua sem origem presumida na sincronização.
+  await db.collection('achievement_awards').updateOne({ownerId,key:'first-play-1'},{$unset:{evidence:''}});
+  assert.equal((await sync()).achievements.find(item=>item.id==='first-play-1').evidence,null);
+  await db.collection('episode_progress').updateMany({itemId:seriesId,season:3,episode:{$lte:3}},{$set:{feeling:'loved',favoriteActorId:'tmdb:123',favoriteActorName:'Ator favorito',favoriteCharacter:'Herói'}});
+  const favorites=await sync();
+  for(const id of ['heart-3','actor-fan-3','character-fan-3']) {
+    const achievement=favorites.achievements.find(item=>item.id===id);
+    assert.ok(achievement.unlockedAt,id);
+    assert.equal(achievement.current,3);
+    assert.equal(achievement.evidence.length,3);
+    assert.ok(achievement.evidence.every(value=>value.includes('Série de teste — T3 E')));
+  }
+  assert.equal((await sync(b.cookie)).achievements.find(item=>item.id==='heart-3').current,0);
+  await db.collection('library_items').insertMany(Array.from({length:100},(_,i)=>({ownerId,kind:'movie',status:'completed',title:'Crítica '+i,stars:5})));
+  const continuous=await sync();
+  const critic=continuous.achievements.find(item=>item.id==='critic-50');
+  assert.equal(critic.progressionLevel,0);
+  assert.equal(critic.cycleStars,2);
+  assert.equal(continuous.achievements.find(item=>item.id==='first-play-1').progressionLevel,0);
+  assert.equal(critic.levels,4,'marcos das estrelas permanecem fixos');
+  assert.equal(critic.nextLevelTarget,250);
+  await db.collection('library_items').deleteMany({ownerId,kind:'movie'});
+  const preserved=(await sync()).achievements.find(item=>item.id==='critic-50');
+  assert.equal(preserved.current,0);
+  assert.equal(preserved.progressionLevel,0);
+  assert.equal(preserved.cycleStars,2);
+  assert.equal(preserved.nextLevelTarget,250);
   const spec=await (await request('/docs-json')).json();
   for(const path of ['/api/achievements','/api/achievements/sync','/api/achievements/title','/api/achievements/celebrations'])assert.ok(spec.paths[path]);
   assert.equal(spec.components.schemas.TitleDto.properties.achievementId.nullable,true);
   assert.equal(spec.components.schemas.AchievementViewDto.properties.unlockedAt.nullable,true);
+  assert.equal(spec.components.schemas.AchievementViewDto.properties.evidence.nullable,true);
   assert.equal(spec.components.schemas.AchievementViewDto.properties.current.minimum,0);
   assert.equal(spec.components.schemas.AchievementViewDto.properties.level.minimum,1);
   assert.ok(spec.components.schemas.AchievementViewDto.properties.metric.enum.includes('daySeason'));
