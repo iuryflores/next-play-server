@@ -71,8 +71,11 @@ export async function automateRelease({ repo, runId, token, mergeToken, request 
   if (!trusted(current) || current.base.sha !== pr.base.sha) throw new Error('O PR mudou durante a conferência.');
   const main = await api('/git/ref/heads/main');
   const testedBase = run.pull_requests?.find(item => item.number === number)?.base?.sha;
-  if (main.object.sha !== pr.base.sha || testedBase !== pr.base.sha)
-    throw new Error('A main mudou desde a validação; execute novamente os testes do PR.');
+  if (main.object.sha !== pr.base.sha || testedBase !== pr.base.sha) {
+    // Atualizar a branch gera synchronize e testa o merge com a main atual; jamais integra uma base não validada.
+    await api(`/pulls/${number}/update-branch`, { method: 'PUT', token: mergeToken, body: { expected_head_sha: pr.head.sha } });
+    return 'A main mudou: branch da release atualizada para executar novamente os testes do PR. Integração aguarda nova validação.';
+  }
   const reviews = await api(`/pulls/${number}/reviews?per_page=100`);
   if (reviews.some(review => review.state === 'CHANGES_REQUESTED'))
     throw new Error('Existe uma solicitação de alterações; a integração automática foi interrompida.');

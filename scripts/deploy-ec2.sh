@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 umask 077
+# O runner publica apenas mensagens prefixadas; o diagnóstico nunca inclui comandos ou valores do .env.
+phase='preparação do usuário'
+trap 'code=$?; printf "[nextplay] Falha da aplicação na etapa: %s (código %s).\n" "$phase" "$code" >&2; exit "$code"' ERR
 release_id=${1:?Release ausente}
 staging=${2:?Staging ausente}
 name=${3:?Nome PM2 ausente}
 [[ "$release_id" =~ ^[a-f0-9]{40}-[0-9]+-[0-9]+$ && "$name" =~ ^nextplay-[a-z0-9_-]+$ ]] || exit 1
 [[ $(id -u) != 0 ]] || exit 1
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+phase='carregamento do Node e PM2'
 if [[ -s "$NVM_DIR/nvm.sh" ]]; then source "$NVM_DIR/nvm.sh"; nvm use 22 >/dev/null; fi
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);if(a!==22||b<13)process.exit(1)' || { echo '[nextplay] Instale Node 22.13+ da linha 22.' >&2; exit 1; }
 command -v pm2 >/dev/null
@@ -22,11 +26,13 @@ previous=$(readlink -f "$app_root/current" || true)
 if [[ -e "$app_root/current" || -L "$app_root/current" ]]; then
   [[ -L "$app_root/current" && "$previous" == "$app_root/releases/"* && -d "$previous" ]] || exit 1
 fi
+phase='verificação do processo e da porta'
 pm2 ping >/dev/null
 pm2 jlist > "$staging/processes.json"
 ss -H -ltnp "sport = :$port" > "$staging/listeners.txt"
 had_process=$(node "$helper" snapshot "$staging/processes.json" "$name" "$staging/previous.config.json" "$staging/listeners.txt" "$app_root")
 mkdir -- "$release"
+phase='extração do build validado'
 # A lista explícita exclui fontes, ferramentas de diagnóstico, backups e .env locais.
 tar -tzf "$staging/application.tar.gz" | awk '
   /^\// || /(^|\/)\.\.(\/|$)/ || $0 !~ /^(dist(\/|$)|package.json$|package-lock.json$)/ {bad=1}
@@ -35,6 +41,7 @@ tar -tzf "$staging/application.tar.gz" | awk '
 tar -tvzf "$staging/application.tar.gz" | awk '$1 ~ /^[hl]/ {bad=1} END {exit bad}'
 tar -xzf "$staging/application.tar.gz" -C "$release" --no-same-owner
 if [[ "$kind" == server ]]; then
+  phase='instalação das dependências'
   install -m 600 "$staging/app.env" "$release/.env"
   (cd "$release" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null 2>&1) || { echo '[nextplay] Falha ao instalar dependências de produção.' >&2; exit 1; }
 else

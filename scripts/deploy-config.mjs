@@ -20,18 +20,25 @@ export function ssmParameters(input) {
   // pacote temporário privado e criptografado, nunca na linha de comando.
   const script = `set -Eeuo pipefail
 umask 077
+phase='preparação e lock'
+trap 'code=$?; printf "[nextplay] Falha SSM na etapa: %s (código %s).\\n" "$phase" "$code" >&2; exit "$code"' ERR
 exec 9>/var/lock/nextplay-deploy.lock
 flock -w 600 9
 staging='${staging}'
 mkdir -- "$staging"
 trap 'rm -rf -- "$staging"' EXIT
+phase='download do pacote S3'
 aws s3 cp 's3://${bucket}/nextplay/${settings.kind}/deployments/${releaseId}/deploy.tar.gz' "$staging/deploy.tar.gz" --region '${region}' --only-show-errors
+phase='checksum e integridade do pacote'
 echo '${checksum}  '"$staging/deploy.tar.gz" | sha256sum --check --status
 tar -tzf "$staging/deploy.tar.gz" | awk '/^\\// || /(^|\\/)\\.\\.(\\/|$)/ || $0 !~ /^(application.tar.gz|app.env|deploy-ec2.sh|deploy-config.mjs|deploy-settings.json|configure-nginx.sh|nginx-http.conf|nginx-https.conf|serve-frontend.mjs)$/ {bad=1} END {exit bad}'
 tar -tvzf "$staging/deploy.tar.gz" | awk '$1 ~ /^[hl]/ {bad=1} END {exit bad}'
+phase='extração do pacote'
 tar -xzf "$staging/deploy.tar.gz" -C "$staging" --no-same-owner
 chown -R '${user}' "$staging"
+phase='ativação da aplicação'
 runuser -l '${user}' -c "bash '$staging/deploy-ec2.sh' '${releaseId}' '$staging' '${name}'"
+phase='configuração do Nginx'
 bash "$staging/configure-nginx.sh" '${settings.domain}' '${settings.clientPort}' '${settings.apiPort}' '${settings.kind}' '${releaseId}'
 `;
   return { commands: [`bash -c '${script.replaceAll("'", "'\\''")}'`], executionTimeout: ['900'] };

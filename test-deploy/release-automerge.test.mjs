@@ -75,8 +75,6 @@ for (const [name, mutate] of [
   ['dependência modificada', s => { s.next.lock.packages['node_modules/example'].integrity = 'different'; }],
   ['SHA não testado', s => { s.pr.head.sha = 'untested'; }],
   ['PR atualizado durante conferência', s => { s.changed = true; }],
-  ['base avançou', s => { s.main = 'advanced'; }],
-  ['testes executados contra outra base', s => { s.run.pull_requests[0].base.sha = 'old'; }],
   ['validação mais recente', s => { s.latest = { ...s.run, id: 43, conclusion: 'failure' }; }],
   ['revisão solicita alterações', s => { s.reviews = [{ state: 'CHANGES_REQUESTED' }]; }],
   ['título diverge da versão', s => { s.pr.title = 'chore(main): release 2.0.0'; }],
@@ -87,6 +85,17 @@ for (const [name, mutate] of [
     assert.equal(f.state.calls.some(call => call.method), false);
   });
 }
+
+for (const stale of ['main', 'testedBase']) test(`atualiza branch e aguarda novos testes quando ${stale} avança`, async () => {
+  const f = fixture();
+  if (stale === 'main') f.state.main = 'advanced'; else f.state.run.pull_requests[0].base.sha = 'old';
+  assert.match(await f.run(), /aguarda nova validação/);
+  const writes = f.state.calls.filter(call => call.method);
+  assert.equal(writes.length, 1);
+  assert.ok(writes[0].path.endsWith('/update-branch'));
+  assert.deepEqual(writes[0].body, { expected_head_sha: 'tested' });
+  assert.equal(writes[0].token, 'pat-test');
+});
 
 test('não declara sucesso se o GitHub recusar o merge', async () => {
   const f = fixture(); f.state.merged = false;
