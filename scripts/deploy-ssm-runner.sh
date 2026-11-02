@@ -41,9 +41,9 @@ for attempt in {1..210}; do
     Failed|Cancelled|TimedOut)
       finished=true
       echo '[nextplay] Deploy falhou. Diagnóstico restrito à aplicação:' >&2
-      aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$EC2_INSTANCE_ID" --query '{stdout:StandardOutputContent,stderr:StandardErrorContent}' --output json > "$task_dir/result.json"
+      aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$EC2_INSTANCE_ID" --query '{stdout:StandardOutputContent,stderr:StandardErrorContent,code:ResponseCode}' --output json > "$task_dir/result.json"
       # Só mensagens emitidas por nossos scripts; nunca publicar logs brutos/pm2_env.
-      node -e 'const d=require(process.argv[1]);for(const l of `${d.stdout}\n${d.stderr}`.split(/\r?\n/))if(l.startsWith("[nextplay]"))console.log(l)' "$task_dir/result.json"
+      node -e 'const d=require(process.argv[1]);console.log(`[nextplay] Código remoto: ${Number.isInteger(d.code)?d.code:"indisponível"}`);const output=`${d.stdout}\n${d.stderr}`;for(const l of output.split(/\r?\n/))if(l.startsWith("[nextplay]"))console.log(l);for(const [pattern,label] of [[/syntax error/i,"Erro de sintaxe no shell remoto"],[/not found|No such file/i,"Comando ou arquivo ausente"],[/Permission denied|AccessDenied/i,"Permissão negada"],[/unbound variable/i,"Variável ausente no shell"],[/invalid option|illegal option/i,"Opção incompatível com o shell"],[/checksum|did NOT match/i,"Falha de checksum"],[/cannot open|Cannot open/i,"Não foi possível abrir um arquivo"]])if(pattern.test(output))console.log(`[nextplay] Diagnóstico: ${label}.`)' "$task_dir/result.json"
       exit 1 ;;
     Pending|InProgress|Delayed|Cancelling) sleep 5 ;;
     *) echo '[nextplay] Status SSM inesperado.' >&2; exit 1 ;;

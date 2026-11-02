@@ -16,6 +16,18 @@ test('comando SSM externo e script interno passam na análise do Bash', () => {
     assert.equal(result.error, undefined); assert.equal(result.status, 0, result.stderr);
   }
 });
+
+test('validação real do pacote SSM aceita arquivos previstos e rejeita caminhos perigosos', () => {
+  const command = ssmParameters({ releaseId: 'a'.repeat(40) + '-1-1', bucket: 'test-bucket', region: 'us-east-1', user: 'ubuntu', name: 'nextplay-api', checksum: 'b'.repeat(64) }).commands[0];
+  const inner = command.slice("bash -c '".length, -1).replaceAll("'\\''", "'");
+  const program = inner.split('\n').find(line => line.startsWith('tar -tzf')).match(/awk '(.+)'$/)[1];
+  // Analisar apenas a sintaxe do Bash não executa o parser do AWK usado na EC2.
+  for (const [input, expected] of [['application.tar.gz\napp.env\ndeploy-ec2.sh\n', 0], ['../app.env\n', 1], ['/etc/passwd\n', 1], ['unexpected.sh\n', 1]]) {
+    const result = spawnSync(bash, ['--noprofile', '--norc', '-c', 'awk "$1"', 'test', program], { input, encoding: 'utf8' });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, expected, result.stderr);
+  }
+});
 function run(status) {
   const dir = mkdtempSync(join(tmpdir(), 'nextplay-runner-'));
   try {
