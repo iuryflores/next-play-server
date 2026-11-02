@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/iuryflores/next-play-server/compare/v0.5.0...v0.5.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* salva tema e densidade na conta do usuário ([226d2bd](https://github.com/iuryflores/next-play-server/commit/226d2bd71ac050d3d1ff7a3975c803cc11bdd4bb))
+
 ## [0.5.0](https://github.com/iuryflores/next-play-server/compare/v0.4.0...v0.5.0) (2026-11-02)
 
 
