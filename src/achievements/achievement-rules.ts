@@ -1,12 +1,14 @@
-export type AchievementMetric = 'movies' | 'books' | 'copies' | 'seasons' | 'binge' | 'series' | 'episodes' | 'classics' | 'reviews' | 'daySeason' | 'loved' | 'favoriteActor' | 'favoriteCharacter';
-export type AchievementDefinition = { id: string; family: string; name: string; title: string; description: string; metric: AchievementMetric; target: number; level: number; levels: number };
+export type AchievementMetric = 'movies' | 'books' | 'copies' | 'seasons' | 'binge' | 'series' | 'episodes' | 'classics' | 'reviews' | 'daySeason' | 'loved' | 'favoriteActor' | 'favoriteCharacter' | 'games' | 'gameHours' | 'gamePlatforms';
+export type AchievementDefinition = { id: string; family: string; name: string; title: string; description: string; metric: AchievementMetric; target: number; level: number; levels: number; legacy?: boolean };
 
 // IDs e metas são estáveis: mudar o nome de uma conquista não perde o histórico salvo.
 const tiers = (family: string, name: string, title: string, description: string, metric: AchievementMetric, targets: number[]): AchievementDefinition[] =>
   targets.map((target, index) => ({ id: `${family}-${target}`, family, name, title, description, metric, target, level: index + 1, levels: targets.length }));
 export const achievements: AchievementDefinition[] = [
   ...tiers('first-play', 'Primeiro play', 'Estreante', 'Assistir ao seu primeiro filme.', 'movies', [1]),
-  ...tiers('binge', 'Só mais um episódio', 'Maratonista', 'Assistir a {0} episódios diferentes no mesmo dia.', 'binge', Array.from({ length: 20 }, (_, i) => (i + 1) * 5)),
+  ...tiers('binge', 'Só mais um episódio', 'Maratonista', 'Assistir a {0} episódios diferentes no mesmo dia.', 'binge', [2, 3, 5, 8, 10]),
+  // Metas antigas só continuam visíveis para quem já as conquistou; nunca são concedidas novamente.
+  ...tiers('binge', 'Só mais um episódio', 'Maratonista', 'Assistir a {0} episódios diferentes no mesmo dia.', 'binge', Array.from({ length: 18 }, (_, i) => (i + 3) * 5)).map(item => ({ ...item, legacy: true })),
   ...tiers('season', 'Temporada encerrada', 'Caçador de temporadas', 'Concluir {0} temporadas regulares diferentes.', 'seasons', [1, 5, 10, 25]),
   ...tiers('cinephile', 'Cinéfilo', 'Cinéfilo', 'Assistir a {0} filmes diferentes.', 'movies', [10, 25, 50, 100]),
   ...tiers('series-finale', 'Até o último episódio', 'Mestre dos finais', 'Marcar {0} séries diferentes como concluídas.', 'series', [1, 5, 10, 25]),
@@ -19,7 +21,39 @@ export const achievements: AchievementDefinition[] = [
   ...tiers('heart', 'De coração', 'Coração de fã', 'Marcar Amei em {0} avaliações distintas de obras concluídas ou episódios.', 'loved', [3, 5, 10, 25, 50]),
   ...tiers('actor-fan', 'Fã de carteirinha', 'Fã de carteirinha', 'Escolher o mesmo ator favorito em {0} avaliações distintas de obras concluídas ou episódios.', 'favoriteActor', [3, 5, 10, 25, 50]),
   ...tiers('character-fan', 'Personagem inesquecível', 'Fã fiel', 'Escolher o mesmo personagem da mesma obra ou série em {0} avaliações distintas de obras concluídas ou episódios.', 'favoriteCharacter', [3, 5, 10, 25, 50]),
+  ...tiers('first-game', 'Primeiro jogo zerado', 'Primeira vitória', 'Concluir seu primeiro jogo.', 'games', [1]),
+  ...tiers('game-credits', 'Até os créditos', 'Mestre dos créditos', 'Concluir {0} jogos diferentes.', 'games', [3, 5, 10, 25, 50]),
+  ...tiers('game-time', 'Tempo de aventura', 'Aventureiro', 'Acumular {0} horas jogadas no total.', 'gameHours', [10, 25, 50, 100, 250]),
+  ...tiers('game-platforms', 'Explorador de plataformas', 'Multiplataforma', 'Jogar em {0} plataformas diferentes.', 'gamePlatforms', [2, 3, 5]),
 ];
+
+export function achievementProgress(family: string, targets: number[], current: number) {
+  if (family !== 'binge' && family !== 'game-platforms') return { progressionMode: targets.length === 1 ? 'single' : 'continuous', ...continuousLevel(targets, current) };
+  // Metas diárias e variedade de plataformas têm um limite realista, sem ciclos infinitos.
+  const earned = targets.filter(target => current >= target).length;
+  return { progressionMode: 'finite', progressionLevel: 0, cycleStars: earned / targets.length * 5, nextLevelTarget: targets.find(target => target > current) || targets.at(-1)! };
+}
+
+export function gameMilestones(items: { kind: string; status: string; title: string; year?: string; catalogId?: string; catalogKey?: string; platform?: string; playtimeMinutes?: number }[]) {
+  const games = items.filter(item => item.kind === 'game');
+  const completed = new Map<string, string>();
+  const times = new Map<string, { title: string; minutes: number }>();
+  const platforms = new Map<string, string[]>();
+  for (const game of games) {
+    const key = game.catalogId || game.catalogKey || `${game.title.trim().toLowerCase()}:${game.year || ''}`;
+    if (game.status === 'completed') completed.set(key, game.title);
+    const minutes = Number.isSafeInteger(game.playtimeMinutes) && game.playtimeMinutes! > 0 && game.playtimeMinutes! <= 6000000 ? game.playtimeMinutes! : 0;
+    // Duplicatas legadas não multiplicam tempo; preservamos o maior total informado para o mesmo jogo.
+    if (minutes > (times.get(key)?.minutes || 0)) times.set(key, { title: game.title, minutes });
+    const platform = (game.platform || '').trim().replace(/\s+/g, ' ');
+    if (platform && (game.status === 'active' || game.status === 'completed' || minutes > 0)) {
+      const normalized = platform.toLowerCase();
+      platforms.set(normalized, [...(platforms.get(normalized) || []), `${platform} — ${game.title}`]);
+    }
+  }
+  const evidence = { games: [...completed.values()], gameHours: [...times.values()].map(row => `${row.title} — ${Math.floor(row.minutes / 60)}h${String(row.minutes % 60).padStart(2, '0')}min`), gamePlatforms: [...platforms.values()].map(rows => [...new Set(rows)].join('; ')) };
+  return { counts: { games: completed.size, gameHours: Math.floor([...times.values()].reduce((sum, row) => sum + row.minutes, 0) / 60), gamePlatforms: platforms.size }, evidence };
+}
 
 export function continuousLevel(targets: number[], current: number) {
   // A última meta inicial vale uma estrela; cinco blocos completam um nível.

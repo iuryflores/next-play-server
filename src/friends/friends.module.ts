@@ -3,7 +3,7 @@ import { Body, Controller, Delete, Get, Post, HttpCode, Injectable, Module, Para
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
 import { IsMongoId, IsString, MaxLength, MinLength, Matches, IsIn, IsOptional } from 'class-validator';
-import { achievements, continuousLevel } from '../achievements/achievement-rules';
+import { achievements, achievementProgress } from '../achievements/achievement-rules';
 import type { Request } from 'express';
 import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
@@ -62,9 +62,9 @@ class FriendsService implements OnModuleInit {
       const profile = profiles.find(row => row.ownerId.toString() === userId);
       const selected = achievements.find(row => row.id === profile?.selectedId);
       if (!selected || !awards.some(row => row.ownerId.toString() === userId && row.key === selected.id)) return null;
-      const family = achievements.filter(row => row.family === selected.family);
+      const family = achievements.filter(row => row.family === selected.family && !row.legacy);
       const peak = Math.max(profile?.peaks?.[selected.metric] || 0, ...family.filter(item => awards.some(row => row.ownerId.toString() === userId && row.key === item.id)).map(item => item.target));
-      return { id: selected.id, family: selected.family, title: selected.title, level: selected.level, levels: selected.levels, ...continuousLevel(family.map(item => item.target), peak) };
+      return { id: selected.id, family: selected.family, title: selected.title, level: selected.level, levels: selected.levels, ...achievementProgress(selected.family, family.map(item => item.target), peak) };
     };
     const name = (userId: string) => users.find(user => user._id.toString() === userId)?.displayName || `Player ${userId.slice(-6)}`;
     const rankingIds = scope === 'all' ? users.map(user => user._id.toString()) : [id, ...links.filter(link => link.status === 'accepted').map(link => link.sender === id ? link.receiver : link.sender)];

@@ -11,6 +11,28 @@ const {getConnectionToken}=require('@nestjs/mongoose');
 const {Types}=require('mongoose');
 const {dailyEpisodeRecord,seasonInOneDay,achievements,reviewMilestones}=require('../dist/achievements/achievement-rules');
 const {continuousLevel}=require('../dist/achievements/achievement-rules');
+const {achievementProgress,gameMilestones}=require('../dist/achievements/achievement-rules');
+
+test('maratona diária tem cinco metas finitas e nunca exige 500 episódios',()=>{
+  const targets=[2,3,5,8,10];
+  assert.deepEqual(achievementProgress('binge',targets,3),{progressionMode:'finite',progressionLevel:0,cycleStars:2,nextLevelTarget:5});
+  assert.deepEqual(achievementProgress('binge',targets,100),{progressionMode:'finite',progressionLevel:0,cycleStars:5,nextLevelTarget:10});
+  assert.equal(achievementProgress('game-platforms',[2,3,5],9).nextLevelTarget,5);
+});
+
+test('jogos contam conclusões distintas, minutos acumulados e plataformas realmente usadas',()=>{
+  const rows=[
+    {kind:'game',status:'completed',title:'A',catalogId:'igdb:game:1',platform:' PC ',playtimeMinutes:599},
+    {kind:'game',status:'completed',title:'A duplicado',catalogId:'igdb:game:1',platform:'pc',playtimeMinutes:300},
+    {kind:'game',status:'active',title:'B',platform:'PS5',playtimeMinutes:1},
+    {kind:'game',status:'planned',title:'C',platform:'Switch'},
+    {kind:'movie',status:'completed',title:'Filme',platform:'Xbox',playtimeMinutes:600},
+  ];
+  const result=gameMilestones(rows);
+  assert.deepEqual(result.counts,{games:1,gameHours:10,gamePlatforms:2});
+  assert.ok(result.evidence.gameHours.some(value=>value.includes('9h59min')));
+  assert.deepEqual(gameMilestones([]).counts,{games:0,gameHours:0,gamePlatforms:0});
+});
 
 test('cada ciclo de cinco estrelas soma um nível e conquistas únicas não têm níveis',()=>{
   const targets=[5,10,25,50];
@@ -27,7 +49,7 @@ test('cada ciclo de cinco estrelas soma um nível e conquistas únicas não têm
 test('todas as famílias progressivas seguem o mesmo ciclo de cinco estrelas',()=>{
   const families=[...new Set(achievements.map(item=>item.family))];
   for(const family of families) {
-    const targets=achievements.filter(item=>item.family===family).map(item=>item.target);
+    const targets=achievements.filter(item=>item.family===family && !item.legacy).map(item=>item.target);
     const unit=targets.at(-1);
     if(targets.length===1) {
       assert.deepEqual(continuousLevel(targets,unit*20),{progressionLevel:0,cycleStars:0,nextLevelTarget:unit},family);
@@ -79,7 +101,7 @@ test('maratonas usam dias civis do fuso, episódios distintos e origem individua
   assert.equal(dailyEpisodeRecord(rows,'UTC',new Date('2026-11-01')),2);
   assert.equal(dailyEpisodeRecord(rows,'America/Sao_Paulo',new Date('2026-11-01')),1);
   assert.equal(new Set(achievements.map(item=>item.id)).size,achievements.length);
-  assert.deepEqual(achievements.filter(item=>item.family==='binge').map(item=>item.target),Array.from({length:20},(_,i)=>(i+1)*5));
+  assert.deepEqual(achievements.filter(item=>item.family==='binge' && !item.legacy).map(item=>item.target),[2,3,5,8,10]);
 });
 
 test('conquistas privadas, persistentes, idempotentes e ligadas ao consumo/posse reais',async t=>{
@@ -123,7 +145,7 @@ test('conquistas privadas, persistentes, idempotentes e ligadas ao consumo/posse
   assert.deepEqual(cinephile.evidence,Array.from({length:10},(_,i)=>'Filme '+i));
   assert.equal(state.achievements.find(item=>item.id==='cinephile-25').evidence,null);
   assert.equal(cinephile.level,1);assert.equal(cinephile.levels,4);
-  assert.equal(state.achievements.length,69);
+  assert.equal(state.achievements.length,68);
   await db.collection('library_items').updateMany({ownerId,kind:'movie'},{$set:{year:'1999',stars:4}});
   // Simula identidade legada equivalente; o índice atual já impede catalogId duplicado.
   await db.collection('library_items').insertOne({ownerId,kind:'movie',status:'completed',title:'Cópia do filme',catalogKey:'tmdb:movie:1',year:'1999',stars:5});
@@ -199,6 +221,20 @@ test('conquistas privadas, persistentes, idempotentes e ligadas ao consumo/posse
   assert.equal(preserved.cycleStars,2);
   assert.equal(preserved.nextLevelTarget,250);
   const spec=await (await request('/docs-json')).json();
+  await db.collection('library_items').insertMany([
+    {ownerId,kind:'game',status:'completed',title:'Jogo A',platform:'PC',playtimeMinutes:599},
+    {ownerId,kind:'game',status:'completed',title:'Jogo B',platform:'PS5',playtimeMinutes:1},
+    {ownerId,kind:'game',status:'completed',title:'Jogo C',platform:'Switch'},
+  ]);
+  const gaming=await sync();
+  for(const id of ['first-game-1','game-credits-3','game-time-10','game-platforms-3']) assert.ok(gaming.achievements.find(item=>item.id===id).unlockedAt,id);
+  assert.equal(gaming.achievements.find(item=>item.id==='game-time-10').current,10);
+  assert.equal(gaming.achievements.find(item=>item.id==='game-platforms-3').progressionMode,'finite');
+  assert.equal(gaming.achievements.find(item=>item.id==='binge-10').nextLevelTarget,10);
+  await db.collection('achievement_awards').insertOne({ownerId,key:'binge-50',unlockedAt:new Date(),evidence:['Histórico preservado']});
+  const legacy=await sync();
+  assert.equal(legacy.achievements.find(item=>item.id==='binge-50').legacy,true);
+  assert.ok(!legacy.pending.includes('binge-50'));
   for(const path of ['/api/achievements','/api/achievements/sync','/api/achievements/title','/api/achievements/celebrations'])assert.ok(spec.paths[path]);
   assert.equal(spec.components.schemas.TitleDto.properties.achievementId.nullable,true);
   assert.equal(spec.components.schemas.AchievementViewDto.properties.unlockedAt.nullable,true);
