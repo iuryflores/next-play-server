@@ -1,3 +1,5 @@
+import { HubModule } from './community/hub.module';
+import { InsightsModule } from './social/insights.module';
 import { SocialModule } from './social/social.module';
 import { ListsModule } from './social/lists.module';
 import { ChallengesModule } from './challenges/challenges.module';
@@ -35,7 +37,7 @@ class HealthController {
       connection.on('error', (error: Error & { code?: string | number }) => console.error(`[MongoDB] Erro de conexão: ${error.name}${error.code ? ` (${error.code})` : ''}`));
       return connection;
     },
-  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule, GameSessionsModule, ChallengesModule, SocialModule, ListsModule],
+  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule, GameSessionsModule, ChallengesModule, SocialModule, ListsModule, InsightsModule, HubModule],
   controllers: [HealthController],
 })
 export class AppModule {}

@@ -1,4 +1,5 @@
 import { recordSocialActivity } from '../social/social-store';
+import {recordPrivateActivity} from '../library/activity-history';
 import { gameStatusEvent } from '../library/game-status-event';
 import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Injectable, Module, NotFoundException, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -99,6 +100,7 @@ export class GameSessionsService {
         $inc: { gameSessionRevision: 1 },
       }, { returnDocument: 'after' });
       if (result) {
+        await recordPrivateActivity(this.connection,result as any,sessions.length>old.length?'game-session-added':sessions.length<old.length?'game-session-deleted':'game-session-edited',`session-change:${id}:${result.gameSessionRevision}`);
         if (item.status === 'planned' && result.status === 'active') await recordSocialActivity(this.connection, result._id, 'started', `game-session:${id}:${sessions.at(-1)?.id}`);
         return this.view(result);
       }

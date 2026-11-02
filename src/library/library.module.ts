@@ -1,4 +1,5 @@
 import { recordSocialActivity } from '../social/social-store';
+import {recordPrivateActivity} from './activity-history';
 import { CommunityService } from '../community/community.service';
 import { RewatchModule, RewatchService, RewatchDto, viewingProgressId, type Viewing } from '../rewatches/rewatches.module';
 import { gameStatusEvent, type GameStatusEvent } from './game-status-event';
@@ -116,6 +117,8 @@ class TitleComment {
 const CommentSchema = SchemaFactory.createForClass(TitleComment);
 CommentSchema.index({ catalogKey: 1, _id: -1 });
 class CommentDto {
+  @ApiProperty({ required:false, type:Boolean, description:'Protegido como possível spoiler por padrão. false permite texto comum, salvo termos de risco identificados por heurística. Não garante detecção semântica completa.' })
+  @ValidateIf((_o,value)=>value!==undefined) @IsBoolean() spoiler?:boolean;
   @ApiProperty({ type: String, required: false, format: 'uuid', description: 'Chave por autor para reenviar a mesma publicação sem duplicá-la. Mesma chave com outro texto/título/comentário principal retorna 409.' })
   @ValidateIf((_o, value) => value !== undefined) @IsUUID() clientRequestId?: string;
   @ApiProperty({ type: String, required: true, minLength: 1, maxLength: 2000 })
@@ -558,6 +561,7 @@ export class LibraryService implements OnModuleInit {
     await this.titles.updateOne({ key }, { $set: this.metadata(item) });
     if (item.catalogKey !== key) { item.catalogKey = key; await item.save(); }
     if (existing.status !== item.status && ['active', 'completed'].includes(item.status)) await recordSocialActivity(this.connection, item._id, item.status === 'completed' ? 'completed' : 'started');
+    else await recordPrivateActivity(this.connection,item,existing.status!==item.status?'planned':'edited');
     return this.publicItem(item);
   }
   async gameTime(ownerId: string, id: string, dto: GameTimeDto) {
@@ -594,6 +598,7 @@ export class LibraryService implements OnModuleInit {
       ...(previous.kind === 'game' ? { $push: { gameStatusHistory: gameStatusEvent(archived ? 'archived' : 'restored', previous.status, previous.status) } } : {}),
     }, { returnDocument: 'after', runValidators: true }).exec();
     if (!item) throw new ConflictException('O acompanhamento mudou em outra aba. Atualize e tente novamente.');
+    await recordPrivateActivity(this.connection,item,archived?'archived':'restored');
     return this.publicItem(item);
   }
   async gameStatusHistory(ownerId: string, id: string, before?: string) {
@@ -617,6 +622,7 @@ export class LibraryService implements OnModuleInit {
     const item = await this.items.findOneAndDelete({ _id: this.id(id), ownerId }).exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
     await this.connection.collection('episode_progress').deleteMany({ itemId: { $in: [item._id, ...(item.rewatches || []).map(cycle => new Types.ObjectId(cycle.id))] } });
+    await recordPrivateActivity(this.connection,item,'deleted');
   }
 }
 @ApiTags('library')

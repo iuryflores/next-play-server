@@ -47,7 +47,7 @@ test('curtidas e respostas são idempotentes, privadas por participação e noti
   await call(likePath, 'PATCH', b, { liked: false }); await call(likePath, 'PATCH', b, { liked: false }); assert.equal(await db.collection('comment_likes').countDocuments(), 0);
   assert.equal((await call(path(first) + '/comments/' + reply.id + '/like', 'PATCH', a, { liked: true })).status, 200);
   let thread = await (await call(threadPath + '/thread', 'GET', b)).json(); assert.equal(thread.replies.length, 1); assert.equal(thread.replies[0].likeCount, 1); assert.equal(thread.replies[0].liked, false);
-  let notices = await (await call('/notifications', 'GET', a)).json(); const notice = notices.items.find(row => row.kind === 'comment-reply'); assert.ok(notice); assert.equal(notice.commentReply.available, true); assert.equal(notice.commentReply.itemId, first.id); assert.equal(notice.commentReply.parentCommentId, root.id); assert.equal(notice.commentReply.excerpt, 'Concordo com você'); assert.equal(notices.unreadCount, 1);
+  let notices = await (await call('/notifications', 'GET', a)).json(); const notice = notices.items.find(row => row.kind === 'comment-reply'); assert.ok(notice); assert.equal(notice.commentReply.available, true); assert.equal(notice.commentReply.itemId, first.id); assert.equal(notice.commentReply.parentCommentId, root.id); assert.equal(notice.commentReply.excerpt, ''); assert.equal(notices.unreadCount, 1);
   assert.equal((await (await call('/notifications', 'GET', b)).json()).items.length, 0);
   assert.equal((await call('/notifications/' + notice.id + '/read', 'PATCH', b)).status, 404);
   assert.equal((await call('/notifications/' + notice.id + '/read', 'PATCH', a)).status, 204);

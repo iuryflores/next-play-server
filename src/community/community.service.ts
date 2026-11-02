@@ -3,8 +3,9 @@ import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types } from 'mongoose';
 import { commentAuthor } from './comment-author';
 import { saveNotification } from '../notifications/notification-store';
+import { protectSpoilers } from './spoilers';
 
-type Comment = { _id: Types.ObjectId; catalogKey: string; ownerId: Types.ObjectId; text: string; createdAt: Date; parentId?: Types.ObjectId | null; replyToOwnerId?: Types.ObjectId; clientRequestId?: string; deleted?: boolean };
+type Comment = { _id: Types.ObjectId; catalogKey: string; ownerId: Types.ObjectId; text: string; createdAt: Date; parentId?: Types.ObjectId | null; replyToOwnerId?: Types.ObjectId; clientRequestId?: string; deleted?: boolean; spoiler?:boolean };
 @Injectable()
 export class CommunityService implements OnModuleInit {
   constructor(@InjectConnection() private readonly connection: Connection) {}
@@ -34,7 +35,7 @@ export class CommunityService implements OnModuleInit {
       this.comments().aggregate<{ _id: Types.ObjectId; count: number }>([{ $match: { parentId: { $in: ids } } }, { $group: { _id: '$parentId', count: { $sum: 1 } } }]).toArray(),
     ]);
     // Só contagem e estado da própria curtida saem da API; identidades dos demais ficam privadas.
-    return rows.map(row => ({ id: row._id.toString(), parentId: row.parentId?.toString() || null, text: row.deleted ? '' : row.text, deleted: Boolean(row.deleted), createdAt: row.createdAt, mine: row.ownerId.toString() === owner, author: commentAuthor(row.catalogKey, row.ownerId.toString()), likeCount: row.deleted ? 0 : (likes.find(like => like._id.equals(row._id))?.count || 0), liked: !row.deleted && Boolean(likes.find(like => like._id.equals(row._id))?.liked), replyCount: replies.find(reply => reply._id.equals(row._id))?.count || 0 }));
+    return rows.map(row => ({ id: row._id.toString(), parentId: row.parentId?.toString() || null, spoiler: row.spoiler !== false, text: row.deleted ? '' : row.text, deleted: Boolean(row.deleted), createdAt: row.createdAt, mine: row.ownerId.toString() === owner, author: commentAuthor(row.catalogKey, row.ownerId.toString()), likeCount: row.deleted ? 0 : (likes.find(like => like._id.equals(row._id))?.count || 0), liked: !row.deleted && Boolean(likes.find(like => like._id.equals(row._id))?.liked), replyCount: replies.find(reply => reply._id.equals(row._id))?.count || 0 }));
   }
   private async ratings(catalogKey: string) {
     // Contas com registros legados duplicados contribuem somente com a avaliação
@@ -60,16 +61,16 @@ export class CommunityService implements OnModuleInit {
     const rows = await this.comments().find({ catalogKey: item.catalogKey, parentId: root._id, ...(after ? { _id: { $gt: this.id(after) } } : {}) }).sort({ _id: 1 }).limit(21).toArray();
     return { comment: (await this.publicRows(owner, [root]))[0], replies: await this.publicRows(owner, rows.slice(0, 20)), next: rows.length > 20 ? rows[19]._id.toString() : null };
   }
-  async create(owner: string, id: string, dto: { text: string; clientRequestId?: string }, parentId?: string) {
+  async create(owner: string, id: string, dto: { text: string; clientRequestId?: string; spoiler?:boolean }, parentId?: string) {
     const item = await this.owned(owner, id), ownerId = new Types.ObjectId(owner);
     const parent = parentId ? await this.target(item.catalogKey, parentId) : null;
     if (parent && (parent.parentId || parent.deleted)) throw new BadRequestException('Responda a um comentário principal disponível.');
-    let row: Comment = { _id: new Types.ObjectId(), ownerId, catalogKey: item.catalogKey, text: dto.text, createdAt: new Date(), ...(dto.clientRequestId ? { clientRequestId: dto.clientRequestId } : {}), ...(parent ? { parentId: parent._id, ...(parent.ownerId.equals(ownerId) ? {} : { replyToOwnerId: parent.ownerId }) } : {}) };
+    let row: Comment = { _id: new Types.ObjectId(), ownerId, catalogKey: item.catalogKey, text: dto.text, spoiler: protectSpoilers(dto.text,dto.spoiler), createdAt: new Date(), ...(dto.clientRequestId ? { clientRequestId: dto.clientRequestId } : {}), ...(parent ? { parentId: parent._id, ...(parent.ownerId.equals(ownerId) ? {} : { replyToOwnerId: parent.ownerId }) } : {}) };
     try { await this.comments().insertOne(row); }
     catch (error) {
       if ((error as { code?: number }).code !== 11000 || !dto.clientRequestId) throw error;
       const saved = await this.comments().findOne({ ownerId, clientRequestId: dto.clientRequestId });
-      if (!saved || saved.deleted || saved.catalogKey !== item.catalogKey || saved.text !== dto.text || (saved.parentId?.toString() || '') !== (parent?._id.toString() || '')) throw new ConflictException('Esta publicação já foi usada com outros dados.');
+      if (!saved || saved.deleted || saved.catalogKey !== item.catalogKey || saved.text !== dto.text || (saved.spoiler ?? true) !== protectSpoilers(dto.text,dto.spoiler) || (saved.parentId?.toString() || '') !== (parent?._id.toString() || '')) throw new ConflictException('Esta publicação já foi usada com outros dados.');
       row = saved;
     }
     // A resposta persistida funciona como origem recuperável caso a notificação falhe depois.

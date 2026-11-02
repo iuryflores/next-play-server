@@ -1,4 +1,5 @@
 import { recordSocialActivity } from '../social/social-store';
+import {recordPrivateActivity} from '../library/activity-history';
 import { viewingProgressId, finishViewing } from '../rewatches/rewatches.module';
 import { ApiProperty, ApiHeader, ApiTags, ApiCookieAuth, ApiOperation } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from '../library/vote-identity';
@@ -207,6 +208,7 @@ export class EpisodesService implements OnModuleInit {
       const changed = await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active', updatedAt: new Date() } });
       if (changed.modifiedCount) await recordSocialActivity(this.connection, item._id, 'started');
     }
+    await recordPrivateActivity(this.connection,item as any,dto.scope==='season'?`season-watched:S${dto.season}`:'episodes-watched');
     if (dto.scope === 'through') return this.watch(ownerId, id, { season: dto.season!, episode: dto.episode!, watched: true, stars: dto.stars, feeling: dto.feeling, favoriteCharacter: dto.favoriteCharacter, favoriteCastId: dto.favoriteCastId }, item.rewatchActiveId || '');
     return this.list(ownerId, id);
   }
@@ -217,6 +219,7 @@ export class EpisodesService implements OnModuleInit {
     await this.progress.deleteMany({ itemId: viewingProgressId(item), ...(dto.scope === 'season' ? { season: dto.season } : {}) });
     const remaining = await this.progress.exists({ itemId: viewingProgressId(item) });
     if (!item.rewatchActiveId) await this.connection.collection('library_items').updateOne({ _id: item._id, ownerId: new Types.ObjectId(ownerId) }, { $set: { status: remaining ? 'active' : 'planned', completedOn: null, completedAt: null, stars: 0, feeling: '', favoriteCharacter: '', ...emptyVoteIdentity }, $unset: { episodesCompletedAt: '' } });
+    await recordPrivateActivity(this.connection,item as any,'episodes-unwatched');
     return this.list(ownerId, id);
   }
   async watch(ownerId: string, id: string, dto: WatchDto, expectedViewing?: string) {
@@ -244,6 +247,7 @@ export class EpisodesService implements OnModuleInit {
       await this.progress.deleteOne(filter);
       if (!item.rewatchActiveId) await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'completed' }, { $set: { status: 'active', completedOn: null, completedAt: null }, $unset: { episodesCompletedAt: '' } });
     }
+    await recordPrivateActivity(this.connection,item as any,'episode-updated:S'+dto.season+'E'+dto.episode);
     return this.list(ownerId, id);
   }
 }

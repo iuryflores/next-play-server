@@ -1,4 +1,5 @@
 import { recordSocialActivity } from '../social/social-store';
+import {recordPrivateActivity} from '../library/activity-history';
 import { BadRequestException, ConflictException, Injectable, Module, NotFoundException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types } from 'mongoose';
@@ -88,6 +89,7 @@ export class RewatchService {
     } : { $set: { rewatchWanted: dto.action === 'plan', updatedAt: new Date() } });
     if (!result.matchedCount) throw new ConflictException('O acompanhamento mudou. Atualize e tente novamente.');
     if (dto.action === 'start') await recordSocialActivity(this.connection, item._id, 'started', `viewing:${next}:started`);
+    else if(Boolean(item.rewatchWanted)!==(dto.action==='plan'))await recordPrivateActivity(this.connection,item as any,dto.action==='plan'?'rewatch-planned':'rewatch-unplanned');
   }
   async history(owner: string, id: string, before?: number) {
     const item = await this.owned(owner, id);

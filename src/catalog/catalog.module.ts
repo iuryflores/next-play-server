@@ -112,6 +112,15 @@ export class CatalogService {
     return { directors, supported: true };
   }
 
+  async franchise(catalogId: string) {
+    if (!/^tmdb:movie:[1-9]\d{0,14}$/.test(catalogId)) return null;
+    const data = await this.tmdb<{ belongs_to_collection?: { id:number; name:string } | null }>('movie/'+catalogId.split(':')[2]);
+    const collection = data.belongs_to_collection;
+    if (!collection) return null;
+    if (!Number.isSafeInteger(collection.id) || collection.id <= 0 || typeof collection.name !== 'string') throw new BadGatewayException('Coleção TMDB inválida.');
+    return { id: collection.id, name: collection.name.slice(0,200) };
+  }
+
   async trailer(catalogId: string | undefined, language: string) {
     type Video = { key: string; name: string; site: string; type: string; official?: boolean };
     type Trailer = { key: string; name: string; language: string };

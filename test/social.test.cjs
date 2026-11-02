@@ -21,7 +21,7 @@ test('média anônima, feed consentido, perfil/Top 4 e alertas de backlog preser
   const patch = async (user, item, status, extra = {}) => { const r = await call('/library/' + item.id, 'PATCH', user, { title: item.title, kind: item.kind, status, notes: 'PRIVATE NOTE', ...extra }); assert.equal(r.status, 200, await r.clone().text()); return (await r.json()).item; };
   const settings = async (user, value) => { const r = await call('/social/settings', 'PATCH', user, value); assert.equal(r.status, 200, await r.clone().text()); return r.json(); };
   assert.equal((await call('/social/feed')).status, 401);
-  assert.deepEqual(await json('/social/settings', a), { publicProfile: false, shareActivity: false, backlogAlerts: true, favoriteIds: [] });
+  assert.deepEqual(await json('/social/settings', a), { publicProfile: false, shareActivity: false, backlogAlerts: true, favoriteIds: [], bio: '', tastes: '', favoriteActors: [], favoriteDirectors: [], favoriteAuthors: [], shareComparison: false, shareFollowers: false, isCritic: false });
   assert.equal((await call('/social/feed?before=bad', 'GET', b)).status, 400);
   assert.equal((await call('/social/settings', 'PATCH', a, { publicProfile: true }, 'https://evil.example')).status, 403);
   for (const body of [{ publicProfile: null }, { shareActivity: 'yes' }, { backlogAlerts: 1 }, { favoriteIds: null }, { favoriteIds: ['bad'] }, { favoriteIds: Array(5).fill('a'.repeat(24)) }]) assert.equal((await call('/social/settings', 'PATCH', a, body)).status, 400);
@@ -115,5 +115,5 @@ test('média anônima, feed consentido, perfil/Top 4 e alertas de backlog preser
   await settings(a, { publicProfile: false }); assert.equal((await call('/social/profiles/' + a.id, 'GET', c)).status, 404);
   assert.equal((await call('/friends/' + link.id, 'DELETE', b)).status, 204); assert.equal((await json('/social/feed', b)).activities.length, 0);
   assert.equal((await json('/notifications', b)).items.filter(row => row.kind === 'friend-activity').every(row => !row.friendActivity.available), true);
-  const spec = await json('/docs-json', a); assert.equal(spec.components.schemas.SocialSettingsDto.properties.favoriteIds.maxItems, 4); assert.ok(spec.components.schemas.NotificationDto.properties.kind.enum.includes('friend-activity'));
+  const spec = await json('/docs-json', a); assert.equal(spec.components.schemas.SocialSettingsDto.properties.favoriteIds.maxItems, 10); assert.ok(spec.components.schemas.NotificationDto.properties.kind.enum.includes('friend-activity'));
 });

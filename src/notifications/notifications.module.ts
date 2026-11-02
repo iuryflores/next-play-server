@@ -136,7 +136,7 @@ export class NotificationsService implements OnModuleInit {
         const parent = reply ? await this.connection.collection('title_comments').findOne({ _id: reply.parentId, ownerId, catalogKey: reply.catalogKey }, { projection: { _id: 1 } }) : null;
         // Remoção da resposta ou perda de acesso ao título retira trecho e destino da notificação.
         const available = Boolean(reply && item && parent);
-        commentReply = { available, author: available ? commentAuthor(reply!.catalogKey, reply!.ownerId.toString()) : '', title: available ? item!.title : '', itemId: available ? item!._id.toString() : null, parentCommentId: available ? parent!._id.toString() : null, excerpt: available ? String(reply!.text).slice(0, 160) : '' };
+        commentReply = { available, author: available ? commentAuthor(reply!.catalogKey, reply!.ownerId.toString()) : '', title: available ? item!.title : '', itemId: available ? item!._id.toString() : null, parentCommentId: available ? parent!._id.toString() : null, excerpt: available && reply!.spoiler === false ? String(reply!.text).slice(0, 160) : '' };
       }
       if (row.kind === 'friend-activity') friendActivity = await this.activityNotice(ownerId, row.sourceId, sources);
       return { id: row._id.toString(), kind: row.kind, createdAt: row.createdAt, readAt: row.readAt || null, achievement, friendRequest, commentReply, friendActivity };

@@ -1,10 +1,12 @@
-import { ApiTags, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiTags, ApiCookieAuth, ApiOperation } from '@nestjs/swagger';
 import { BadGatewayException, BadRequestException, Controller, Get, Injectable, Module, Query, Req, ServiceUnavailableException } from '@nestjs/common';
 import type { Request } from 'express';
 import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { CatalogModule, CatalogService } from '../catalog/catalog.module';
 import { getConfig } from '../config';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
 
 type Hit = { type?: unknown; title?: unknown; vanity?: unknown; releaseYear?: unknown; castCrew?: { crew?: { Director?: unknown } }; rottenTomatoes?: { criticsScore?: unknown; audienceScore?: unknown } };
 export function score(value: unknown): number | null {
@@ -73,8 +75,8 @@ export class RottenTomatoesService {
 @ApiCookieAuth('session')
 @Controller('rotten-tomatoes')
 export class RottenTomatoesController {
-  constructor(private readonly service: RottenTomatoesService, private readonly auth: AuthService, private readonly catalog: CatalogService) {}
-  @Get('search') async search(@Req() request: Request, @Query('q') query: string, @Query('catalogId') catalogId?: string, @Query('kind') kind = 'movie', @Query('year') year?: string) {
+  constructor(private readonly service: RottenTomatoesService, private readonly auth: AuthService, private readonly catalog: CatalogService, @InjectConnection() private readonly db:Connection) {}
+  @Get('search') @ApiOperation({summary:'Buscar notas públicas do Rotten Tomatoes',description:'Com catalogId TMDB válido, resolve título original/diretores e mantém snapshot público para estatísticas somente quando título/ano/direção identificam um resultado inequívoco. Busca textual comum não grava correspondência. Não salva notas privadas; ausência não vira zero.'}) async search(@Req() request: Request, @Query('q') query: string, @Query('catalogId') catalogId?: string, @Query('kind') kind = 'movie', @Query('year') year?: string) {
     const raw: unknown = request.cookies?.[getConfig().cookieName];
     const user = await this.auth.me(typeof raw === 'string' ? raw : undefined);
     this.catalog.limit(user.id);
@@ -84,7 +86,12 @@ export class RottenTomatoesController {
       const movie = await this.catalog.detail(catalogId, 'en-US');
       const title = (movie.originalTitle || movie.title).slice(0, 100);
       const searchedDirectors = kind === 'movie' ? (await this.catalog.directors(catalogId)).directors.map(director => director.name) : undefined;
-      return { ...await this.service.search(title, kind, year), searchedTitle: title, ...(searchedDirectors ? { searchedDirectors } : {}) };
+      const result=await this.service.search(title, kind, year);
+      const normalize=(value:string)=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');
+      const matches=result.results.filter(row=>row.year===Number(year||movie.year)&&normalize(row.title)===normalize(title)&&(!searchedDirectors||searchedDirectors.length>0&&searchedDirectors.every(name=>row.directors.some(other=>normalize(other)===normalize(name)))));
+      // Só guarda correspondência inequívoca do catálogo, sem converter o Tomatometer em nota de qualidade.
+      if(matches.length===1)await this.db.collection('catalog_critic_scores').updateOne({_id:catalogId as any},{$set:{value:matches[0],queriedAt:new Date(result.queriedAt)}},{upsert:true});
+      return { ...result, searchedTitle: title, ...(searchedDirectors ? { searchedDirectors } : {}) };
     }
     return this.service.search(query, kind, year);
   }
