@@ -14,9 +14,7 @@ test('diagnóstico publica mensagens seguras em linhas reais de stdout e stderr'
   try {
     const file = join(dir, 'result.json');
     writeFileSync(file, JSON.stringify({ code: 1, stdout: 'ruído\n[nextplay] etapa pública\n', stderr: 'SMTP_PASS=segredo\r\n[nextplay] falha pública\r\n' }));
-    const script = readFileSync(new URL('../scripts/deploy-ssm-runner.sh', import.meta.url), 'utf8');
-    const code = script.match(/node -e '([^']+)'/)[1];
-    const result = spawnSync(process.execPath, ['-e', code, file], { encoding: 'utf8' });
+    const result = spawnSync(process.execPath, ['scripts/deploy-diagnostic.mjs', file], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /etapa pública/);
     assert.match(result.stdout, /falha pública/);
