@@ -12,6 +12,6 @@ import { User, UserSchema, Session, SessionSchema, AuthAttempt, AuthAttemptSchem
   imports: [MongooseModule.forFeature([
     { name: User.name, schema: UserSchema }, { name: Session.name, schema: SessionSchema }, { name: AuthAttempt.name, schema: AuthAttemptSchema },
   ])],
-  controllers: [AuthController], providers: [AuthService, AuthRequestGuard, AvatarStorage, PasswordRecovery, RecoveryMailer, EmailConfirmation], exports: [AuthService],
+  controllers: [AuthController], providers: [AuthService, AuthRequestGuard, AvatarStorage, PasswordRecovery, RecoveryMailer, EmailConfirmation], exports: [AuthService, AvatarStorage],
 })
 export class AuthModule {}

@@ -7,6 +7,7 @@ import { achievements, continuousLevel } from '../achievements/achievement-rules
 import type { Request } from 'express';
 import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
+import { AvatarStorage } from '../auth/avatar-storage';
 import { LibraryModule, LibraryService } from '../library/library.module';
 import { getConfig } from '../config';
 import { positions } from '../library/ranking-snapshot';
@@ -29,7 +30,7 @@ class FriendProfileDto { @ApiProperty({ type: String, required: true, minLength:
   @IsString() @MinLength(1) @MaxLength(40) @Matches(/\S/) name!: string; }
 @Injectable()
 class FriendsService implements OnModuleInit {
-  constructor(@InjectModel(Friendship.name) private readonly friends: Model<Friendship>, @InjectConnection() private readonly connection: Connection, private readonly library: LibraryService) {}
+  constructor(@InjectModel(Friendship.name) private readonly friends: Model<Friendship>, @InjectConnection() private readonly connection: Connection, private readonly library: LibraryService, private readonly avatars: AvatarStorage) {}
   async onModuleInit() { await this.friends.init(); }
   private member(id: string) { return { $or: [{ sender: id }, { receiver: id }] }; }
   async profile(id: string, name: string) { await this.connection.collection('users').updateOne({ _id: new Types.ObjectId(id) }, { $set: { displayName: name.trim() } }); }
@@ -53,7 +54,7 @@ class FriendsService implements OnModuleInit {
   async list(id: string, visitId?: string, scope: 'friends' | 'all' = 'friends') {
     const links = await this.friends.find(this.member(id)).sort({ _id: -1 }).lean().exec();
     const ids = [...new Set([id, ...links.flatMap(link => [link.sender, link.receiver])])];
-    const users = await this.connection.collection('users').find(scope === 'all' ? {} : { _id: { $in: ids.map(id => new Types.ObjectId(id)) } }, { projection: { displayName: 1 } }).toArray();
+    const users = await this.connection.collection('users').find(scope === 'all' ? {} : { _id: { $in: ids.map(id => new Types.ObjectId(id)) } }, { projection: { displayName: 1, avatar: 1, avatarKey: 1 } }).toArray();
     // Só o título selecionado é público; avaliações, evidências e demais conquistas ficam privadas.
     const profiles = await this.connection.collection('achievement_profiles').find({ ownerId: { $in: users.map(user => user._id) } }, { projection: { ownerId: 1, selectedId: 1, peaks: 1 } }).toArray();
     const awards = await this.connection.collection('achievement_awards').find({ ownerId: { $in: users.map(user => user._id) } }, { projection: { ownerId: 1, key: 1 } }).toArray();
@@ -67,10 +68,14 @@ class FriendsService implements OnModuleInit {
     };
     const name = (userId: string) => users.find(user => user._id.toString() === userId)?.displayName || `Player ${userId.slice(-6)}`;
     const rankingIds = scope === 'all' ? users.map(user => user._id.toString()) : [id, ...links.filter(link => link.status === 'accepted').map(link => link.sender === id ? link.receiver : link.sender)];
-    const ranked: { id: string; name: string; me: boolean; minutes: number; episodes: number; incomplete: boolean; achievement: ReturnType<typeof achievement> }[] = [];
+    const ranked: { id: string; name: string; avatar: string; connection: { id: string; status: string; incoming: boolean } | null; me: boolean; minutes: number; episodes: number; incomplete: boolean; achievement: ReturnType<typeof achievement> }[] = [];
     for (const userId of rankingIds) {
       const stats = await this.library.stats(userId);
-      ranked.push({ id: userId, name: name(userId), me: userId === id, minutes: stats.minutes, episodes: stats.episodes, incomplete: stats.missingRuntime > 0 || stats.pendingSeries > 0, achievement: achievement(userId) });
+      const user = users.find(user => user._id.toString() === userId);
+      // URLs temporárias não expõem credenciais; falha da foto não impede consultar o ranking.
+      const avatar = user?.avatarKey ? await this.avatars.signedUrl(user.avatarKey).catch(() => '') : user?.avatar || '';
+      const link = links.find(link => link.sender === userId || link.receiver === userId);
+      ranked.push({ id: userId, name: name(userId), avatar, connection: userId !== id && link ? { id: link._id.toString(), status: link.status, incoming: link.receiver === id } : null, me: userId === id, minutes: stats.minutes, episodes: stats.episodes, incomplete: stats.missingRuntime > 0 || stats.pendingSeries > 0, achievement: achievement(userId) });
     }
     ranked.sort((a, b) => b.minutes - a.minutes || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const comparison = await compareRankingVisit(this.connection, id, scope === 'all' ? 'users' : 'friends', visitId, { friends: positions(ranked.map(entry => ({ id: entry.id, count: entry.minutes }))) });
@@ -89,7 +94,7 @@ class FriendsController {
     return (await this.auth.me(typeof token === 'string' ? token : undefined)).id;
   }
   @Get()
-  @ApiOperation({ summary: 'Listar amigos ou todos os usuários e seu ranking', description: 'Requer sessão. Retorna code, name, connections (amizades e pedidos) e ranking do escopo solicitado, incluindo posição, movimento, nome público, tempo, episódios e achievement (título escolhido e progresso ou null). Não retorna emails, coleção, avaliações ou evidências de conquistas. Rankings dos dois escopos mantêm históricos de movimento independentes.' })
+  @ApiOperation({ summary: 'Listar amigos ou todos os usuários e seu ranking', description: 'Requer sessão. Retorna code, name, connections (amizades e pedidos) e ranking do escopo solicitado, incluindo posição, movimento, nome público, avatar (URL temporária ou foto legada; vazio se indisponível), connection (id/status/incoming ou null), tempo, episódios e achievement (título escolhido e progresso ou null). Não retorna emails, coleção, avaliações ou evidências de conquistas. Rankings dos dois escopos mantêm históricos de movimento independentes.' })
   @ApiOkResponse({ description: 'Perfil da sessão, conexões e ranking do escopo friends (padrão) ou all.' })
   async list(@Req() request: Request, @Query() query: FriendsQueryDto) { return this.friends.list(await this.owner(request), request.get('X-Ranking-Visit'), query.scope); }
   @Post('profile') @HttpCode(204) async profile(@Req() request: Request, @Body() dto: FriendProfileDto) { await this.friends.profile(await this.owner(request), dto.name); }

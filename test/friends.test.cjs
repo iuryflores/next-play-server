@@ -15,6 +15,10 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   const call = (path, method = 'GET', body, cookie, origin = process.env.CLIENT_ORIGIN) => fetch(base + '/api' + path, { method, headers: { origin, ...(cookie ? { cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const register = async email => { const r = await call('/auth/register', 'POST', { email, password: 'Long-test-password-123!' }); assert.equal(r.status, 201); return { cookie: r.headers.get('set-cookie').split(';')[0], id: (await r.json()).user.id }; };
   const a = await register('a@example.test'), b = await register('b@example.test'), c = await register('c@example.test');
+  // A assinatura é simulada para validar fotos sem acessar o S3 durante o teste.
+  const {AvatarStorage}=require('../dist/auth/avatar-storage');
+  app.get(AvatarStorage).signedUrl=async key=>'https://example.test/photo.jpg?key='+encodeURIComponent(key);
+  await db.collection('users').updateOne({_id:new Types.ObjectId(b.id)},{$set:{avatarKey:'uploads/avatars/test.jpg'}});
   assert.equal((await call('/friends')).status, 401);
   assert.equal((await call('/friends/profile', 'POST', { name: 'Alex' }, a.cookie)).status, 204);
   assert.equal((await call('/friends/requests', 'POST', { code: a.id }, a.cookie)).status, 400);
@@ -41,6 +45,10 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   const global=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
   assert.equal(global.ranking.length,3,'ranking geral inclui usuários sem amizade');
   assert.equal(global.ranking[0].id,b.id);
+  assert.match(global.ranking[0].avatar,/^https:\/\/example.test\/photo.jpg/);
+  assert.equal(global.ranking[0].connection.status,'accepted');
+  assert.equal(global.ranking.find(row=>row.id===c.id).connection,null);
+  assert.equal(global.ranking.find(row=>row.id===c.id).avatar,'');
   assert.equal(global.ranking[0].achievement.title,'Cinéfilo');
   assert.equal(global.ranking[0].achievement.cycleStars,3.38);
   assert.equal(global.ranking[0].achievement.progressionLevel,0);
@@ -57,5 +65,14 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   assert.equal((await call('/friends/requests', 'POST', { code: c.id }, a.cookie)).status, 204);
   const pending = (await (await call('/friends', 'GET', undefined, c.cookie)).json()).connections[0];
   assert.equal(pending.incoming, true); assert.equal((await call('/friends/' + pending.id, 'DELETE', undefined, c.cookie)).status, 204);
+  // Convite direto usa o ID retornado pelo ranking, sem o usuário precisar digitá-lo.
+  const directory=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
+  const target=directory.ranking.find(row=>row.id===c.id);
+  assert.equal((await call('/friends/requests','POST',{code:target.id},a.cookie)).status,204);
+  const outgoing=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
+  assert.equal(outgoing.ranking.find(row=>row.id===c.id).connection.incoming,false);
+  assert.equal(outgoing.ranking.find(row=>row.id===c.id).connection.status,'pending');
+  const incoming=await (await call('/friends?scope=all','GET',undefined,c.cookie)).json();
+  assert.equal(incoming.ranking.find(row=>row.id===a.id).connection.incoming,true);
 });
 
