@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/iuryflores/next-play-server/compare/v0.5.2...v0.5.3) (2026-11-02)
+
+
+### Bug Fixes
+
+* identifica erros de transporte e shell no deploy remoto ([c0212b7](https://github.com/iuryflores/next-play-server/commit/c0212b7f82dc9636fc378671f5570a0a985a7d33))
+
 ## [0.5.2](https://github.com/iuryflores/next-play-server/compare/v0.5.1...v0.5.2) (2026-11-02)
 
 
