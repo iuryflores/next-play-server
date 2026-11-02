@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/iuryflores/next-play-server/compare/v0.7.0...v0.8.0) (2026-11-02)
+
+
+### Features
+
+* amplia acompanhamento de jogos e adiciona desafios pessoais ([68edaa5](https://github.com/iuryflores/next-play-server/commit/68edaa5623e92b8a63687a41c6e441a7d7683c42))
+
 ## [0.7.0](https://github.com/iuryflores/next-play-server/compare/v0.6.0...v0.7.0) (2026-11-02)
 
 
