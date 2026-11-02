@@ -1,3 +1,4 @@
+import { friendSources, SocialActivity, SocialSettings } from '../social/social-store';
 import { commentAuthor } from '../community/comment-author';
 import { BadRequestException, Controller, ForbiddenException, Get, HttpCode, Injectable, Module, NotFoundException, OnModuleInit, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -38,14 +39,21 @@ class CommentReplyNotice {
   @ApiProperty({ type: String, nullable: true }) parentCommentId!: string | null;
   @ApiProperty({ description: 'Trecho público de até 160 caracteres, vazio quando a resposta não está mais disponível.' }) excerpt!: string;
 }
+class FriendActivityNotice {
+  @ApiProperty() available!: boolean;
+  @ApiProperty() name!: string;
+  @ApiProperty() title!: string;
+  @ApiProperty({ type: String, nullable: true }) itemId!: string | null;
+}
 class NotificationDto {
   @ApiProperty() id!: string;
-  @ApiProperty({ enum: ['achievement', 'friend-request', 'comment-reply'] }) kind!: string;
+  @ApiProperty({ enum: ['achievement', 'friend-request', 'comment-reply', 'friend-activity'] }) kind!: string;
   @ApiProperty({ format: 'date-time' }) createdAt!: string;
   @ApiProperty({ type: String, nullable: true, format: 'date-time' }) readAt!: string | null;
   @ApiProperty({ type: AchievementNotice, nullable: true }) achievement!: AchievementNotice | null;
   @ApiProperty({ type: FriendNotice, nullable: true }) friendRequest!: FriendNotice | null;
   @ApiProperty({ type: CommentReplyNotice, nullable: true }) commentReply!: CommentReplyNotice | null;
+  @ApiProperty({ type: FriendActivityNotice, nullable: true }) friendActivity!: FriendActivityNotice | null;
 }
 class NotificationsDto {
   @ApiProperty({ type: [NotificationDto] }) items!: NotificationDto[];
@@ -61,6 +69,17 @@ export class NotificationsService implements OnModuleInit {
     await this.records().createIndex({ ownerId: 1, kind: 1, sourceId: 1 }, { unique: true });
     await this.records().createIndex({ ownerId: 1, createdAt: -1, _id: -1 });
   }
+  private async activityNotice(ownerId: Types.ObjectId, sourceId: string, sources: Awaited<ReturnType<typeof friendSources>>) {
+    const hidden = { available: false, name: '', title: '', itemId: null as string | null };
+    const event = await this.connection.collection<SocialActivity>('social_activity').findOne({ _id: new Types.ObjectId(sourceId), recipientIds: ownerId, type: 'completed' });
+    if (!event || !sources.some(source => source.ownerId.equals(event.ownerId) && event.recordedAt >= source.since)) return hidden;
+    const sourceItem = await this.connection.collection('library_items').findOne({ _id: event.itemId, ownerId: event.ownerId, archived: { $ne: true } });
+    if (!sourceItem) return hidden;
+    const item = await this.connection.collection('library_items').findOne({ ownerId, catalogKey: sourceItem.catalogKey, archived: { $ne: true } }, { projection: { title: 1 } });
+    if (!item) return hidden;
+    const actor = await this.connection.collection('users').findOne({ _id: event.ownerId }, { projection: { displayName: 1 } });
+    return { available: true, name: actor?.displayName || 'Player', title: item.title, itemId: item._id.toString() };
+  }
   private async reconcile(ownerId: Types.ObjectId) {
     // Recupera o histórico anterior à central e eventos cujo salvamento foi interrompido.
     // Não altera readAt nem transforma uma celebração dispensada em notificação lida.
@@ -69,6 +88,12 @@ export class NotificationsService implements OnModuleInit {
       this.connection.collection('friendships').find({ receiver: ownerId.toString(), status: 'pending' }).toArray(),
       this.connection.collection('title_comments').find({ replyToOwnerId: ownerId, deleted: { $ne: true } }).toArray(),
     ]);
+    const sources = await friendSources(this.connection, ownerId.toString());
+    const settings = await this.connection.collection<SocialSettings>('social_profiles').findOne({ _id: ownerId });
+    const activities = sources.length && settings?.backlogAlerts !== false ? await this.connection.collection<SocialActivity>('social_activity').find({ type: 'completed', recipientIds: ownerId, $or: sources.map(source => ({ ownerId: source.ownerId, recordedAt: { $gte: source.since } })) }).toArray() : [];
+    await Promise.all(activities.map(async event => {
+      if ((await this.activityNotice(ownerId, event._id.toString(), sources)).available) await saveNotification(this.connection, { ownerId, kind: 'friend-activity', sourceId: event._id.toString(), senderId: event.ownerId.toString(), createdAt: event.recordedAt });
+    }));
     await Promise.all([
       ...awards.filter(row => achievements.some(item => item.id === row.key)).map(row => saveNotification(this.connection, { ownerId, kind: 'achievement', sourceId: row.key, createdAt: row.unlockedAt })),
       ...requests.map(row => saveNotification(this.connection, { ownerId, kind: 'friend-request', sourceId: row._id.toString(), senderId: row.sender, createdAt: row.createdAt })),
@@ -91,8 +116,9 @@ export class NotificationsService implements OnModuleInit {
       this.records().countDocuments({ ownerId, readAt: { $exists: false } }),
     ]);
     const page = rows.slice(0, 30);
+    const sources = await friendSources(this.connection, owner);
     const items = await Promise.all(page.map(async row => {
-      let achievement = null, friendRequest = null, commentReply = null;
+      let achievement = null, friendRequest = null, commentReply = null, friendActivity = null;
       if (row.kind === 'achievement') {
         const definition = achievements.find(item => item.id === row.sourceId);
         const award = await this.connection.collection('achievement_awards').findOne({ ownerId, key: row.sourceId });
@@ -112,7 +138,8 @@ export class NotificationsService implements OnModuleInit {
         const available = Boolean(reply && item && parent);
         commentReply = { available, author: available ? commentAuthor(reply!.catalogKey, reply!.ownerId.toString()) : '', title: available ? item!.title : '', itemId: available ? item!._id.toString() : null, parentCommentId: available ? parent!._id.toString() : null, excerpt: available ? String(reply!.text).slice(0, 160) : '' };
       }
-      return { id: row._id.toString(), kind: row.kind, createdAt: row.createdAt, readAt: row.readAt || null, achievement, friendRequest, commentReply };
+      if (row.kind === 'friend-activity') friendActivity = await this.activityNotice(ownerId, row.sourceId, sources);
+      return { id: row._id.toString(), kind: row.kind, createdAt: row.createdAt, readAt: row.readAt || null, achievement, friendRequest, commentReply, friendActivity };
     }));
     const last = page.at(-1);
     return { items, unreadCount, nextCursor: rows.length > 30 && last ? Buffer.from(JSON.stringify([last.createdAt.toISOString(), last._id.toString()])).toString('base64url') : null };
@@ -138,7 +165,7 @@ class NotificationsController {
     if (request.method !== 'GET' && request.headers.origin !== getConfig().origin) throw new ForbiddenException('Origem da requisição não permitida.');
     return (await this.auth.forRequest(request)).id;
   }
-  @Get() @ApiOperation({ summary: 'Consultar notificações privadas', description: 'Inclui conquistas, convites recebidos e respostas de outras pessoas aos próprios comentários. Respostas usam pseudônimo por título, trecho público e destino privado para o item da conta; removidas ou sem acesso retornam available=false sem trecho/destino. Não notifica curtidas nem respostas a si mesmo. Ordena do evento mais recente para o mais antigo. Consultar não marca como lida. Convites encerrados permanecem no histórico; status é atualizado na consulta. Evidências são exclusivas do dono.' })
+  @Get() @ApiOperation({ summary: 'Consultar notificações privadas', description: 'Inclui conquistas, convites recebidos e respostas de outras pessoas aos próprios comentários. Respostas usam pseudônimo por título, trecho público e destino privado para o item da conta; removidas ou sem acesso retornam available=false sem trecho/destino. Inclui também conclusões de amigos compartilhadas após aceite, quando o título já estava no backlog do destinatário no registro. Respeita as opções sociais, amizade atual e acesso ao título. Não notifica curtidas nem respostas a si mesmo. Ordena do evento mais recente para o mais antigo. Consultar não marca como lida. Convites encerrados permanecem no histórico; status é atualizado na consulta. Evidências são exclusivas do dono.' })
   @ApiOkResponse({ type: NotificationsDto })
   @ApiResponse({ status: 400, description: 'Cursor inválido ou campos não permitidos.' })
   async list(@Req() request: Request, @Query() query: NotificationQuery) { return this.service.list(await this.owner(request), query.cursor); }

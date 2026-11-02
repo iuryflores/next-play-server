@@ -36,10 +36,23 @@ export class CommunityService implements OnModuleInit {
     // Só contagem e estado da própria curtida saem da API; identidades dos demais ficam privadas.
     return rows.map(row => ({ id: row._id.toString(), parentId: row.parentId?.toString() || null, text: row.deleted ? '' : row.text, deleted: Boolean(row.deleted), createdAt: row.createdAt, mine: row.ownerId.toString() === owner, author: commentAuthor(row.catalogKey, row.ownerId.toString()), likeCount: row.deleted ? 0 : (likes.find(like => like._id.equals(row._id))?.count || 0), liked: !row.deleted && Boolean(likes.find(like => like._id.equals(row._id))?.liked), replyCount: replies.find(reply => reply._id.equals(row._id))?.count || 0 }));
   }
+  private async ratings(catalogKey: string) {
+    // Contas com registros legados duplicados contribuem somente com a avaliação
+    // mais recente do título; nenhuma nota individual ou identidade é devolvida.
+    const rows = await this.connection.collection('library_items').aggregate<{ _id: number; count: number }>([
+      { $match: { catalogKey } },
+      { $sort: { updatedAt: -1, _id: -1 } },
+      { $group: { _id: '$ownerId', stars: { $first: '$stars' }, status: { $first: '$status' } } },
+      { $match: { status: 'completed', stars: { $in: [1, 2, 3, 4, 5] } } },
+      { $group: { _id: '$stars', count: { $sum: 1 } } },
+    ]).toArray();
+    const count = rows.reduce((total, row) => total + row.count, 0);
+    return { count, average: count ? Math.round(rows.reduce((total, row) => total + row._id * row.count, 0) / count * 100) / 100 : null, distribution: [5, 4, 3, 2, 1].map(stars => ({ stars, count: rows.find(row => row._id === stars)?.count || 0 })) };
+  }
   async list(owner: string, id: string, before?: string) {
     const item = await this.owned(owner, id);
     const rows = await this.comments().find({ catalogKey: item.catalogKey, parentId: null, ...(before ? { _id: { $lt: this.id(before) } } : {}) }).sort({ _id: -1 }).limit(31).toArray();
-    return { comments: await this.publicRows(owner, rows.slice(0, 30)), next: rows.length > 30 ? rows[29]._id.toString() : null };
+    return { ratingSummary: await this.ratings(item.catalogKey), comments: await this.publicRows(owner, rows.slice(0, 30)), next: rows.length > 30 ? rows[29]._id.toString() : null };
   }
   async thread(owner: string, id: string, commentId: string, after?: string) {
     const item = await this.owned(owner, id), root = await this.target(item.catalogKey, commentId);

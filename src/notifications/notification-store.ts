@@ -2,7 +2,7 @@ import { Connection, Types } from 'mongoose';
 
 export type NotificationRecord = {
   ownerId: Types.ObjectId;
-  kind: 'achievement' | 'friend-request' | 'comment-reply';
+  kind: 'achievement' | 'friend-request' | 'comment-reply' | 'friend-activity';
   sourceId: string;
   createdAt: Date;
   readAt?: Date;

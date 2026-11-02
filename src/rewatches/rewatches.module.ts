@@ -1,3 +1,4 @@
+import { recordSocialActivity } from '../social/social-store';
 import { BadRequestException, ConflictException, Injectable, Module, NotFoundException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types } from 'mongoose';
@@ -43,6 +44,7 @@ export async function finishViewing(connection: Connection, item: { _id: Types.O
     $set: { rewatchActiveId: null, rewatchWanted: false, updatedAt: new Date(), ...Object.fromEntries(Object.entries(completion).map(([key, value]) => ['rewatches.$.' + key, value])) },
   });
   if (!result.matchedCount) throw new ConflictException('A visualização mudou. Atualize e tente novamente.');
+  await recordSocialActivity(connection, item._id, 'completed', `viewing:${item.rewatchActiveId}:completed`);
 }
 
 @Injectable()
@@ -85,6 +87,7 @@ export class RewatchService {
       $set: { rewatchActiveId: next, rewatchWanted: false, updatedAt: new Date() },
     } : { $set: { rewatchWanted: dto.action === 'plan', updatedAt: new Date() } });
     if (!result.matchedCount) throw new ConflictException('O acompanhamento mudou. Atualize e tente novamente.');
+    if (dto.action === 'start') await recordSocialActivity(this.connection, item._id, 'started', `viewing:${next}:started`);
   }
   async history(owner: string, id: string, before?: number) {
     const item = await this.owned(owner, id);

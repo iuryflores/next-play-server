@@ -1,3 +1,4 @@
+import { recordSocialActivity } from '../social/social-store';
 import { viewingProgressId, finishViewing } from '../rewatches/rewatches.module';
 import { ApiProperty, ApiHeader, ApiTags, ApiCookieAuth, ApiOperation } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from '../library/vote-identity';
@@ -198,8 +199,14 @@ export class EpisodesService implements OnModuleInit {
     const identity = dto.scope === 'season' && dto.favoriteCharacter?.trim() ? await voteIdentity(this.connection, item.catalogId, dto.favoriteCharacter.trim(), dto.favoriteCastId) : {};
     await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId: viewingProgressId(item), ...episode }, update: { $setOnInsert: { itemId: viewingProgressId(item), ...episode, watchedAt: dto.watchedDateUnknown ? null : now, recordedAt: now, watchedDateUnknown: dto.watchedDateUnknown || false, watchOrigin: 'bulk' }, ...(dto.scope === 'season' && dto.favoriteCharacter?.trim() ? { $set: { favoriteCharacter: dto.favoriteCharacter.trim(), ...identity } } : {}) }, upsert: true } })));
     if (dto.scope === 'series' && item.rewatchActiveId) await finishViewing(this.connection, item, dto.watchedDateUnknown);
-    else if (dto.scope === 'series') await this.connection.collection('library_items').updateOne({ _id: item._id }, { $set: { status: 'completed', watchedDateUnknown: item.status === 'completed' ? Boolean(item.watchedDateUnknown) : Boolean(dto.watchedDateUnknown), completedOn: (item.status === 'completed' ? item.watchedDateUnknown : dto.watchedDateUnknown) ? null : item.completedOn || today, completedAt: item.completedAt || now, episodesCompletedAt: now } });
-    else if (!item.rewatchActiveId) await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active' } });
+    else if (dto.scope === 'series') {
+      const changed = await this.connection.collection('library_items').updateOne({ _id: item._id, status: item.status }, { $set: { status: 'completed', watchedDateUnknown: item.status === 'completed' ? Boolean(item.watchedDateUnknown) : Boolean(dto.watchedDateUnknown), completedOn: (item.status === 'completed' ? item.watchedDateUnknown : dto.watchedDateUnknown) ? null : item.completedOn || today, completedAt: item.completedAt || now, episodesCompletedAt: now, updatedAt: now } });
+      if (changed.modifiedCount && item.status !== 'completed') await recordSocialActivity(this.connection, item._id, 'completed');
+    }
+    else if (!item.rewatchActiveId) {
+      const changed = await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active', updatedAt: new Date() } });
+      if (changed.modifiedCount) await recordSocialActivity(this.connection, item._id, 'started');
+    }
     if (dto.scope === 'through') return this.watch(ownerId, id, { season: dto.season!, episode: dto.episode!, watched: true, stars: dto.stars, feeling: dto.feeling, favoriteCharacter: dto.favoriteCharacter, favoriteCastId: dto.favoriteCastId }, item.rewatchActiveId || '');
     return this.list(ownerId, id);
   }
@@ -229,7 +236,10 @@ export class EpisodesService implements OnModuleInit {
       // Reavaliar sem escolha explícita preserva a data; desconhecida nunca recebe hoje por fallback.
       const review = { ...identity, ...(dto.watchedDateUnknown !== undefined ? { watchedDateUnknown: dto.watchedDateUnknown, watchedAt: dto.watchedDateUnknown ? null : previous?.watchedAt || new Date() } : {}), ...(dto.stars !== undefined ? { stars: dto.stars } : {}), ...(dto.feeling !== undefined ? { feeling: dto.feeling } : {}), ...(dto.favoriteCharacter !== undefined ? { favoriteCharacter: dto.favoriteCharacter.trim() } : {}) };
       if (Object.keys(review).length) await this.progress.updateOne(filter, { $set: review }, { runValidators: true });
-      if (!item.rewatchActiveId) await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active' } });
+      if (!item.rewatchActiveId) {
+      const changed = await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active', updatedAt: new Date() } });
+      if (changed.modifiedCount) await recordSocialActivity(this.connection, item._id, 'started');
+    }
     } else {
       await this.progress.deleteOne(filter);
       if (!item.rewatchActiveId) await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'completed' }, { $set: { status: 'active', completedOn: null, completedAt: null }, $unset: { episodesCompletedAt: '' } });

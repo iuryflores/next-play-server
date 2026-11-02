@@ -1,3 +1,4 @@
+import { recordSocialActivity } from '../social/social-store';
 import { gameStatusEvent } from '../library/game-status-event';
 import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Injectable, Module, NotFoundException, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -97,7 +98,10 @@ export class GameSessionsService {
         ...(sessions.length > old.length && item.status === 'planned' ? { $push: { gameStatusHistory: gameStatusEvent('status', 'planned', 'active', 'session') } } : {}),
         $inc: { gameSessionRevision: 1 },
       }, { returnDocument: 'after' });
-      if (result) return this.view(result);
+      if (result) {
+        if (item.status === 'planned' && result.status === 'active') await recordSocialActivity(this.connection, result._id, 'started', `game-session:${id}:${sessions.at(-1)?.id}`);
+        return this.view(result);
+      }
     }
     throw new ConflictException('O jogo mudou em outra aba. Atualize e tente novamente.');
   }

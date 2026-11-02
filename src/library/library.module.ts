@@ -1,3 +1,4 @@
+import { recordSocialActivity } from '../social/social-store';
 import { CommunityService } from '../community/community.service';
 import { RewatchModule, RewatchService, RewatchDto, viewingProgressId, type Viewing } from '../rewatches/rewatches.module';
 import { gameStatusEvent, type GameStatusEvent } from './game-status-event';
@@ -527,7 +528,7 @@ export class LibraryService implements OnModuleInit {
     const allEpisodes = dto.status === 'completed' && payload.kind === 'series' && details?.catalogId?.startsWith('tmdb:series:') ? await this.episodes.prepareCompletion(details.catalogId!) : null;
     const catalogKey = await this.remember(payload);
     if (await this.items.exists({ ownerId, catalogKey })) throw new ConflictException('Este título já está na sua coleção.');
-    try { const item = await this.items.create({ ...payload, ...completion, ...(payload.kind === 'game' ? { gameStatusHistory: [gameStatusEvent('added', null, dto.status)] } : {}), catalogKey, ownerId }); if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); } return this.publicItem(item); }
+    try { const item = await this.items.create({ ...payload, ...completion, ...(payload.kind === 'game' ? { gameStatusHistory: [gameStatusEvent('added', null, dto.status)] } : {}), catalogKey, ownerId }); if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); } await recordSocialActivity(this.connection, item._id, dto.status === 'completed' ? 'completed' : dto.status === 'active' ? 'started' : 'added', `added:${item.id}`); return this.publicItem(item); }
     catch (error) { if ((error as { code?: number }).code === 11000) throw new ConflictException('Este título já está na sua coleção.'); throw error; }
   }
   async update(ownerId: string, id: string, dto: ItemDto) {
@@ -550,17 +551,19 @@ export class LibraryService implements OnModuleInit {
     const isGame = (existing.catalogId ? existing.kind : dto.kind) === 'game';
     if (!isGame && existing.gameSessions?.length) throw new BadRequestException('Remova as sessões antes de alterar a categoria do jogo.');
     if (isGame && dto.playtimeMinutes !== undefined && dto.playtimeMinutes < sessionMinutes(existing.gameSessions)) throw new BadRequestException('O total não pode ser menor que as sessões registradas. Edite as sessões primeiro.');
-    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId, ...(isGame ? { status: existing.status } : {}), ...(isGame && dto.playtimeMinutes !== undefined ? { $expr: { $and: [{ $eq: [{ $ifNull: ['$gameSessionRevision', 0] }, existing.gameSessionRevision || 0] }, { $eq: [{ $ifNull: ['$playtimeMinutes', 0] }, existing.playtimeMinutes || 0] }] } } : {}) }, { ...(isGame && existing.status !== dto.status ? { $push: { gameStatusHistory: gameStatusEvent('status', existing.status, dto.status) } } : {}), ...(isGame && dto.playtimeMinutes !== undefined ? { $inc: { gameSessionRevision: 1 } } : {}), $set: { ...changes, ...(dto.priority !== undefined ? { priority: dto.priority } : {}), ...(!isGame ? { playtimeMinutes: 0, lastPlayedOn: null } : dto.playtimeMinutes !== undefined ? { playtimeMinutes: dto.playtimeMinutes } : {}), platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
+    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId, status: existing.status, ...(isGame && dto.playtimeMinutes !== undefined ? { $expr: { $and: [{ $eq: [{ $ifNull: ['$gameSessionRevision', 0] }, existing.gameSessionRevision || 0] }, { $eq: [{ $ifNull: ['$playtimeMinutes', 0] }, existing.playtimeMinutes || 0] }] } } : {}) }, { ...(isGame && existing.status !== dto.status ? { $push: { gameStatusHistory: gameStatusEvent('status', existing.status, dto.status) } } : {}), ...(isGame && dto.playtimeMinutes !== undefined ? { $inc: { gameSessionRevision: 1 } } : {}), $set: { ...changes, ...(dto.priority !== undefined ? { priority: dto.priority } : {}), ...(!isGame ? { playtimeMinutes: 0, lastPlayedOn: null } : dto.playtimeMinutes !== undefined ? { playtimeMinutes: dto.playtimeMinutes } : {}), platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
     if (!item) throw new ConflictException('O acompanhamento mudou em outra aba. Atualize e tente novamente.');
     if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); }
     const key = await this.remember(item);
     await this.titles.updateOne({ key }, { $set: this.metadata(item) });
     if (item.catalogKey !== key) { item.catalogKey = key; await item.save(); }
+    if (existing.status !== item.status && ['active', 'completed'].includes(item.status)) await recordSocialActivity(this.connection, item._id, item.status === 'completed' ? 'completed' : 'started');
     return this.publicItem(item);
   }
   async gameTime(ownerId: string, id: string, dto: GameTimeDto) {
     if (dto.mode === 'add' && dto.minutes === 0) throw new BadRequestException('Informe pelo menos um minuto jogado.');
     const filter = { _id: this.id(id), ownerId, kind: 'game' };
+    const previousStatus = (await this.items.findOne(filter).select('status').lean().exec())?.status;
     // A soma ocorre no banco, evitando perder horas quando duas abas registram tempo juntas.
     const item = await this.items.findOneAndUpdate({ ...filter, ...(dto.expectedTotal !== undefined ? { $and: [{ $expr: { $eq: [{ $ifNull: ['$playtimeMinutes', 0] }, dto.expectedTotal] } }] } : {}), ...(dto.mode === 'add' ? { $or: [{ playtimeMinutes: { $lte: 6000000 - dto.minutes } }, { playtimeMinutes: { $exists: false } }] } : { $expr: { $gte: [dto.minutes, { $sum: '$gameSessions.minutes' }] } }) }, [
       { $set: {
@@ -579,6 +582,7 @@ export class LibraryService implements OnModuleInit {
       if (current) throw new BadRequestException('O total deve respeitar o limite e não pode ser menor que as sessões registradas.');
       throw new NotFoundException('Jogo não encontrado.');
     }
+    if (previousStatus === 'planned' && item.status === 'active') await recordSocialActivity(this.connection, item._id, 'started', `game-time:${item.gameStatusHistory?.at(-1)?.id}`);
     return this.publicItem(item);
   }
   async archive(ownerId: string, id: string, archived: boolean) {
@@ -645,6 +649,7 @@ class LibraryController {
     await this.rewatches.change(owner, id, dto);
     return { item: await this.catalog.localize((await this.library.list(owner)).find(item => item.id === id)!, await this.language(request), false) };
   }
+  @ApiOperation({ summary: 'Consultar comentários e nota agregada da comunidade', description: 'Título na biblioteca da sessão. ratingSummary retorna média anônima de 1 a 5 (null sem notas), count de pessoas e distribution por estrela. Usa a avaliação mais recente por autor entre títulos concluídos com a mesma identidade, incluindo arquivados. Não divulga avaliações individuais ou anotações. Comentários paginados em ordem decrescente; next usado como before.' })
   @Get(':id/community') async community(@Req() request: Request, @Param('id') id: string, @Query('before') before?: string) { return this.library.community(await this.owner(request), id, before); }
   @Get(':id/cast') async cast(@Req() request: Request, @Param('id') id: string, @Query('season') season?: string, @Query('episode') episode?: string) { return this.library.cast(await this.owner(request), id, await this.language(request), season === undefined ? undefined : Number(season), episode === undefined ? undefined : Number(episode)); }
   @Get(':id/comments/:commentId/thread')
