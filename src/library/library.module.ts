@@ -1,3 +1,4 @@
+import { CommunityService } from '../community/community.service';
 import { RewatchModule, RewatchService, RewatchDto, viewingProgressId, type Viewing } from '../rewatches/rewatches.module';
 import { gameStatusEvent, type GameStatusEvent } from './game-status-event';
 import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation, ApiQuery, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
@@ -114,9 +115,15 @@ class TitleComment {
 const CommentSchema = SchemaFactory.createForClass(TitleComment);
 CommentSchema.index({ catalogKey: 1, _id: -1 });
 class CommentDto {
+  @ApiProperty({ type: String, required: false, format: 'uuid', description: 'Chave por autor para reenviar a mesma publicação sem duplicá-la. Mesma chave com outro texto/título/comentário principal retorna 409.' })
+  @ValidateIf((_o, value) => value !== undefined) @IsUUID() clientRequestId?: string;
   @ApiProperty({ type: String, required: true, minLength: 1, maxLength: 2000 })
   @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString() @MinLength(1) @MaxLength(2000) text!: string;
+}
+class CommentLikeDto {
+  @ApiProperty({ type: Boolean, description: 'Estado desejado da curtida. Reenvios não duplicam contagem; false remove somente a própria curtida.' })
+  @IsBoolean() liked!: boolean;
 }
 class ArchiveDto { @ApiProperty({ type: Boolean, required: true })
   @IsBoolean() archived!: boolean; }
@@ -173,7 +180,7 @@ class ItemDto {
 }
 @Injectable()
 export class LibraryService implements OnModuleInit {
-  constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService, private readonly books: BooksService, private readonly rewatches: RewatchService) {}
+  constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService, private readonly books: BooksService, private readonly rewatches: RewatchService, private readonly communityService: CommunityService) {}
   async onModuleInit() {
     await Promise.all([this.items.init(), this.titles.init(), this.comments.init()]);
     // Backfill metadata already saved locally; never call providers at startup.
@@ -205,7 +212,7 @@ export class LibraryService implements OnModuleInit {
   }
   async community(ownerId: string, id: string, before?: string) {
     const item = await this.owned(ownerId, id);
-    const rows = await this.comments.find({ catalogKey: item.catalogKey, ...(before ? { _id: { $lt: this.id(before) } } : {}) }).sort({ _id: -1 }).limit(31).exec();
+    const page = await this.communityService.list(ownerId, id, before);
     const votes = await this.items.find({ catalogKey: item.catalogKey, status: 'completed', favoriteCharacter: { $nin: ['', null] } }).select('ownerId favoriteCharacter').lean().exec();
     const tallies = new Map<string, { name: string; owners: Set<string> }>();
     for (const vote of votes) {
@@ -213,7 +220,7 @@ export class LibraryService implements OnModuleInit {
       const key = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').replace(/\s+/g, ' ');
       const tally = tallies.get(key) || { name, owners: new Set<string>() }; tally.owners.add(vote.ownerId.toString()); tallies.set(key, tally);
     }
-    return { comments: rows.slice(0, 30).map(comment => ({ id: comment.id, text: comment.text, createdAt: comment.createdAt, mine: comment.ownerId.toString() === ownerId, author: 'Pessoa ' + createHash('sha256').update(comment.catalogKey + comment.ownerId.toString()).digest('hex').slice(0, 6) })), next: rows.length > 30 ? rows[29].id : null, votes: [...tallies.values()].map(tally => ({ name: tally.name, count: tally.owners.size })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, 10) };
+    return { ...page, votes: [...tallies.values()].map(tally => ({ name: tally.name, count: tally.owners.size })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, 10) };
   }
   async cast(ownerId: string, id: string, language: string, season?: number, episode?: number) {
     const item = await this.owned(ownerId, id);
@@ -253,15 +260,11 @@ export class LibraryService implements OnModuleInit {
     const items = await this.list(ownerId);
     return { ...data, ...await compareRankingVisit(this.connection, ownerId, 'stats', visitId, snapshot(data, items)) };
   }
-  async comment(ownerId: string, id: string, dto: CommentDto) {
-    const item = await this.owned(ownerId, id);
-    await this.comments.create({ ownerId, catalogKey: item.catalogKey, text: dto.text });
-  }
-  async deleteComment(ownerId: string, id: string, commentId: string) {
-    const item = await this.owned(ownerId, id);
-    const removed = await this.comments.findOneAndDelete({ _id: this.id(commentId), catalogKey: item.catalogKey, ownerId });
-    if (!removed) throw new NotFoundException('Comentário não encontrado.');
-  }
+  async comment(ownerId: string, id: string, dto: CommentDto) { await this.communityService.create(ownerId, id, dto); }
+  async deleteComment(ownerId: string, id: string, commentId: string) { await this.communityService.remove(ownerId, id, commentId); }
+  async commentThread(ownerId: string, id: string, commentId: string, after?: string) { return this.communityService.thread(ownerId, id, commentId, after); }
+  async reply(ownerId: string, id: string, commentId: string, dto: CommentDto) { return { comment: await this.communityService.create(ownerId, id, dto, commentId) }; }
+  async commentLike(ownerId: string, id: string, commentId: string, liked: boolean) { return this.communityService.like(ownerId, id, commentId, liked); }
   private metadata(item: Partial<CatalogEntry>) {
     return { title: item.title, originalTitle: item.originalTitle, kind: item.kind, genres: item.genres || [], parentGameCatalogId: item.parentGameCatalogId, catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '', bookMetadataVersion: item.bookMetadataVersion || 0 } : {}) };
   }
@@ -644,7 +647,20 @@ class LibraryController {
   }
   @Get(':id/community') async community(@Req() request: Request, @Param('id') id: string, @Query('before') before?: string) { return this.library.community(await this.owner(request), id, before); }
   @Get(':id/cast') async cast(@Req() request: Request, @Param('id') id: string, @Query('season') season?: string, @Query('episode') episode?: string) { return this.library.cast(await this.owner(request), id, await this.language(request), season === undefined ? undefined : Number(season), episode === undefined ? undefined : Number(episode)); }
+  @Get(':id/comments/:commentId/thread')
+  @ApiOperation({ summary: 'Consultar conversa e respostas de um comentário', description: 'Exige título na biblioteca da sessão. Retorna comment (raiz), replies (até 20, em ordem de publicação) e next (cursor after ou null). Inclui likeCount, liked da sessão e replyCount. Autores usam pseudônimo por título; não expõe IDs de quem curtiu. Comentários removidos são marcadores sem texto, preservando respostas.' })
+  @ApiQuery({ name: 'after', required: false, type: String, description: 'ID next da página anterior.' })
+  async commentThread(@Req() request: Request, @Param('id') id: string, @Param('commentId') commentId: string, @Query('after') after?: string) { return this.library.commentThread(await this.owner(request), id, commentId, after); }
+  @Post(':id/comments/:commentId/replies')
+  @ApiOperation({ summary: 'Responder a comentário do mesmo título', description: 'Uma camada de respostas por comentário principal. Texto de 1 a 2000 caracteres. Notifica somente o autor do comentário principal, se for outra pessoa. clientRequestId UUID evita duplicação em reenvios. Não permite responder raiz removida ou outra resposta. Retorna comment com contagem/estado de curtidas e parentReplyCount confirmado para a raiz, inclusive nos reenvios.' })
+  @ApiResponse({ status: 409, description: 'Chave de publicação reutilizada com outros dados.' })
+  async reply(@Req() request: Request, @Param('id') id: string, @Param('commentId') commentId: string, @Body() dto: CommentDto) { return this.library.reply(await this.owner(request), id, commentId, dto); }
+  @Patch(':id/comments/:commentId/like')
+  @ApiOperation({ summary: 'Curtir ou retirar a própria curtida', description: 'Estado explícito e idempotente. Exige título na biblioteca e comentário/resposta disponível do mesmo título. Retorna liked e likeCount; não concede XP nem notifica curtidas.' })
+  async commentLike(@Req() request: Request, @Param('id') id: string, @Param('commentId') commentId: string, @Body() dto: CommentLikeDto) { return this.library.commentLike(await this.owner(request), id, commentId, dto.liked); }
+  @ApiOperation({ summary: 'Publicar comentário sobre título', description: 'Exige título na biblioteca. Texto público a participantes do mesmo título; autor usa pseudônimo por título. clientRequestId opcional evita repetição de publicações. Listagem paginada em community inclui contagem/estado de curtidas e quantidade de respostas.' })
   @Post(':id/comments') @HttpCode(204) async comment(@Req() request: Request, @Param('id') id: string, @Body() dto: CommentDto) { await this.library.comment(await this.owner(request), id, dto); }
+  @ApiOperation({ summary: 'Remover o próprio comentário ou resposta', description: 'Somente o autor. Remove texto e curtidas, preservando um marcador e as respostas de outras pessoas. Reenvio é idempotente.' })
   @Delete(':id/comments/:commentId') @HttpCode(204) async deleteComment(@Req() request: Request, @Param('id') id: string, @Param('commentId') commentId: string) { await this.library.deleteComment(await this.owner(request), id, commentId); }
   @Get(':id/upcoming') async upcoming(@Req() request: Request, @Param('id') id: string) { return this.library.upcoming(await this.owner(request), id, await this.language(request)); }
   @Get(':id/game-status-history')
@@ -719,7 +735,7 @@ class LibraryController {
   @ApiResponse({ status: 409, description: 'Status ou arquivamento alterado simultaneamente; atualize antes de reenviar.' })
   @Post(':id/archive') @HttpCode(200) async archive(@Req() request: Request, @Param('id') id: string, @Body() dto: ArchiveDto) { return { item: await this.catalog.localize(await this.library.archive(await this.owner(request), id, dto.archived), await this.language(request)) }; }
 }
-@Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, RewatchModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })
+@Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, RewatchModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService, CommunityService], exports: [LibraryService] })
 export class LibraryModule {}
 
 

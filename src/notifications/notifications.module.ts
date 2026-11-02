@@ -1,3 +1,4 @@
+import { commentAuthor } from '../community/comment-author';
 import { BadRequestException, Controller, ForbiddenException, Get, HttpCode, Injectable, Module, NotFoundException, OnModuleInit, Param, Patch, Post, Query, Req } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
@@ -29,13 +30,22 @@ class FriendNotice {
   @ApiProperty({ description: 'Foto pública ou string vazia; nunca retorna email.' }) avatar!: string;
   @ApiProperty({ enum: ['pending', 'accepted', 'closed'] }) status!: string;
 }
+class CommentReplyNotice {
+  @ApiProperty() available!: boolean;
+  @ApiProperty() author!: string;
+  @ApiProperty() title!: string;
+  @ApiProperty({ type: String, nullable: true }) itemId!: string | null;
+  @ApiProperty({ type: String, nullable: true }) parentCommentId!: string | null;
+  @ApiProperty({ description: 'Trecho público de até 160 caracteres, vazio quando a resposta não está mais disponível.' }) excerpt!: string;
+}
 class NotificationDto {
   @ApiProperty() id!: string;
-  @ApiProperty({ enum: ['achievement', 'friend-request'] }) kind!: string;
+  @ApiProperty({ enum: ['achievement', 'friend-request', 'comment-reply'] }) kind!: string;
   @ApiProperty({ format: 'date-time' }) createdAt!: string;
   @ApiProperty({ type: String, nullable: true, format: 'date-time' }) readAt!: string | null;
   @ApiProperty({ type: AchievementNotice, nullable: true }) achievement!: AchievementNotice | null;
   @ApiProperty({ type: FriendNotice, nullable: true }) friendRequest!: FriendNotice | null;
+  @ApiProperty({ type: CommentReplyNotice, nullable: true }) commentReply!: CommentReplyNotice | null;
 }
 class NotificationsDto {
   @ApiProperty({ type: [NotificationDto] }) items!: NotificationDto[];
@@ -54,13 +64,15 @@ export class NotificationsService implements OnModuleInit {
   private async reconcile(ownerId: Types.ObjectId) {
     // Recupera o histórico anterior à central e eventos cujo salvamento foi interrompido.
     // Não altera readAt nem transforma uma celebração dispensada em notificação lida.
-    const [awards, requests] = await Promise.all([
+    const [awards, requests, replies] = await Promise.all([
       this.connection.collection('achievement_awards').find({ ownerId }).toArray(),
       this.connection.collection('friendships').find({ receiver: ownerId.toString(), status: 'pending' }).toArray(),
+      this.connection.collection('title_comments').find({ replyToOwnerId: ownerId, deleted: { $ne: true } }).toArray(),
     ]);
     await Promise.all([
       ...awards.filter(row => achievements.some(item => item.id === row.key)).map(row => saveNotification(this.connection, { ownerId, kind: 'achievement', sourceId: row.key, createdAt: row.unlockedAt })),
       ...requests.map(row => saveNotification(this.connection, { ownerId, kind: 'friend-request', sourceId: row._id.toString(), senderId: row.sender, createdAt: row.createdAt })),
+      ...replies.map(row => saveNotification(this.connection, { ownerId, kind: 'comment-reply', sourceId: row._id.toString(), senderId: row.ownerId.toString(), createdAt: row.createdAt })),
     ]);
   }
   async list(owner: string, cursor?: string) {
@@ -80,19 +92,27 @@ export class NotificationsService implements OnModuleInit {
     ]);
     const page = rows.slice(0, 30);
     const items = await Promise.all(page.map(async row => {
-      let achievement = null, friendRequest = null;
+      let achievement = null, friendRequest = null, commentReply = null;
       if (row.kind === 'achievement') {
         const definition = achievements.find(item => item.id === row.sourceId);
         const award = await this.connection.collection('achievement_awards').findOne({ ownerId, key: row.sourceId });
         if (definition && award) achievement = { id: definition.id, family: definition.family, name: definition.name, description: definition.description, target: definition.target, evidence: award.evidence || [] };
-      } else {
+      } else if (row.kind === 'friend-request') {
         const [user, request] = await Promise.all([
           this.connection.collection('users').findOne({ _id: new Types.ObjectId(row.senderId) }, { projection: { displayName: 1, avatar: 1, avatarKey: 1 } }),
           this.connection.collection('friendships').findOne({ _id: new Types.ObjectId(row.sourceId), receiver: owner, sender: row.senderId }),
         ]);
         friendRequest = { id: row.sourceId, name: user?.displayName || 'Player', avatar: user?.avatarKey ? await this.avatars.signedUrl(user.avatarKey).catch(() => '') : user?.avatar || '', status: request?.status === 'pending' ? 'pending' : request?.status === 'accepted' ? 'accepted' : 'closed' };
       }
-      return { id: row._id.toString(), kind: row.kind, createdAt: row.createdAt, readAt: row.readAt || null, achievement, friendRequest };
+      if (row.kind === 'comment-reply') {
+        const reply = await this.connection.collection('title_comments').findOne({ _id: new Types.ObjectId(row.sourceId), replyToOwnerId: ownerId, deleted: { $ne: true } });
+        const item = reply ? await this.connection.collection('library_items').findOne({ ownerId, catalogKey: reply.catalogKey }, { projection: { title: 1 } }) : null;
+        const parent = reply ? await this.connection.collection('title_comments').findOne({ _id: reply.parentId, ownerId, catalogKey: reply.catalogKey }, { projection: { _id: 1 } }) : null;
+        // Remoção da resposta ou perda de acesso ao título retira trecho e destino da notificação.
+        const available = Boolean(reply && item && parent);
+        commentReply = { available, author: available ? commentAuthor(reply!.catalogKey, reply!.ownerId.toString()) : '', title: available ? item!.title : '', itemId: available ? item!._id.toString() : null, parentCommentId: available ? parent!._id.toString() : null, excerpt: available ? String(reply!.text).slice(0, 160) : '' };
+      }
+      return { id: row._id.toString(), kind: row.kind, createdAt: row.createdAt, readAt: row.readAt || null, achievement, friendRequest, commentReply };
     }));
     const last = page.at(-1);
     return { items, unreadCount, nextCursor: rows.length > 30 && last ? Buffer.from(JSON.stringify([last.createdAt.toISOString(), last._id.toString()])).toString('base64url') : null };
@@ -118,7 +138,7 @@ class NotificationsController {
     if (request.method !== 'GET' && request.headers.origin !== getConfig().origin) throw new ForbiddenException('Origem da requisição não permitida.');
     return (await this.auth.forRequest(request)).id;
   }
-  @Get() @ApiOperation({ summary: 'Consultar notificações privadas', description: 'Inclui conquistas já concedidas e convites recebidos. Ordena do evento mais recente para o mais antigo. Consultar não marca como lida. Convites encerrados permanecem no histórico; status é atualizado na consulta. Evidências são exclusivas do dono.' })
+  @Get() @ApiOperation({ summary: 'Consultar notificações privadas', description: 'Inclui conquistas, convites recebidos e respostas de outras pessoas aos próprios comentários. Respostas usam pseudônimo por título, trecho público e destino privado para o item da conta; removidas ou sem acesso retornam available=false sem trecho/destino. Não notifica curtidas nem respostas a si mesmo. Ordena do evento mais recente para o mais antigo. Consultar não marca como lida. Convites encerrados permanecem no histórico; status é atualizado na consulta. Evidências são exclusivas do dono.' })
   @ApiOkResponse({ type: NotificationsDto })
   @ApiResponse({ status: 400, description: 'Cursor inválido ou campos não permitidos.' })
   async list(@Req() request: Request, @Query() query: NotificationQuery) { return this.service.list(await this.owner(request), query.cursor); }

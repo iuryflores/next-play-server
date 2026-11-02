@@ -9,7 +9,7 @@ process.env.CLIENT_ORIGIN = 'http://localhost:5174'; process.env.NODE_ENV = 'tes
 const { createApp } = require('../dist/bootstrap');
 const { getConnectionToken } = require('@nestjs/mongoose');
 const { Types } = require('mongoose');
-test('friend acceptance gates rankings, ranks time fairly and supports removal', async t => {
+test('friend acceptance gates rankings, ranks XP fairly and supports removal', async t => {
   const app = await createApp(); await app.listen(0, '127.0.0.1'); const base = await app.getUrl(); const db = app.get(getConnectionToken());
   t.after(async () => { try { assert.match(database, /^nextplay_friends_test_[a-f0-9]{32}$/); assert.equal(db.name, database); await db.dropDatabase(); } finally { await app.close(); } });
   const call = (path, method = 'GET', body, cookie, origin = process.env.CLIENT_ORIGIN) => fetch(base + '/api' + path, { method, headers: { origin, ...(cookie ? { cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -31,7 +31,7 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   assert.equal((await call('/friends/' + id + '/accept', 'POST', undefined, a.cookie)).status, 404);
   assert.equal((await call('/friends/' + id + '/accept', 'POST', undefined, c.cookie)).status, 404);
   assert.equal((await call('/friends/' + id + '/accept', 'POST', undefined, b.cookie)).status, 204);
-  data = await (await call('/friends', 'GET', undefined, a.cookie)).json(); assert.equal(data.ranking.length, 2); assert.deepEqual(data.ranking.map(row => row.rank), [1, 2]); assert.equal(data.ranking[0].id, a.id);
+  data = await (await call('/friends', 'GET', undefined, a.cookie)).json(); assert.equal(data.ranking.length, 2); assert.deepEqual(data.ranking.map(row => row.rank), [1, 1]); assert.equal(data.ranking[0].id, a.id);
   const itemId = new Types.ObjectId();
   await db.collection('library_items').insertOne({ _id: itemId, ownerId: new Types.ObjectId(b.id), title: 'Private title', kind: 'series', status: 'active', catalogId: 'tmdb:series:22', notes: 'secret' });
   await db.collection('series_seasons').insertOne({ catalogId: 'tmdb:series:22', number: 1, episodes: [{ number: 1, runtime: 45 }, { number: 2 }] });
@@ -44,6 +44,7 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   await db.collection('achievement_awards').insertOne({ownerId:new Types.ObjectId(b.id),key:'cinephile-100',unlockedAt:new Date(),evidence:['Evidência privada']});
   const global=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
   assert.equal(global.ranking.length,3,'ranking geral inclui usuários sem amizade');
+  assert.deepEqual(global.ranking.map(row=>row.rank),[1,2,2],'XP igual compartilha a colocação nos dois escopos');
   assert.equal(global.ranking[0].id,b.id);
   assert.match(global.ranking[0].avatar,/^https:\/\/example.test\/photo.jpg/);
   assert.equal(global.ranking[0].connection.status,'accepted');
@@ -80,13 +81,13 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
     assert.equal(summary.ranking.find(row=>row.id===a.id).books,0);
     assert.equal(summary.ranking.find(row=>row.id===a.id).games,0);
     assert.equal(summary.ranking.find(row=>row.id===a.id).xp,0);
-    assert.equal(row.rank,1,'novas colunas preservam a ordenação por tempo');
+    assert.equal(row.rank,1,'maior XP fica em primeiro');
     assert.equal(summary.ranking.some(row=>row.id===c.id),scope==='all');
     if(scope==='all') assert.equal(summary.ranking.find(row=>row.id===c.id).books,1);
     for(const privateValue of ['Livro privado','Jogo privado','Cópia duplicada','Livro de outra conta','recordedAt','Evidência privada']) assert.ok(!JSON.stringify(summary).includes(privateValue));
   }
-  assert.ok(await db.collection('ranking_visits').findOne({_id:a.id+':users'}));
-  assert.ok(await db.collection('ranking_visits').findOne({_id:a.id+':friends'}));
+  assert.ok(await db.collection('ranking_visits').findOne({_id:a.id+':users:xp'}));
+  assert.ok(await db.collection('ranking_visits').findOne({_id:a.id+':friends:xp'}));
   assert.equal((await call('/friends/' + id, 'DELETE', undefined, c.cookie)).status, 404);
   assert.equal((await call('/friends/' + id, 'DELETE', undefined, a.cookie)).status, 204);
   assert.equal((await (await call('/friends', 'GET', undefined, b.cookie)).json()).ranking.length, 1);
@@ -115,7 +116,7 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   }));
   for(const history of histories) {
     const row=history.ranking.find(row=>row.id===lucas.id);
-    assert.equal(row.games,73); assert.equal(row.xp,3650); assert.equal(row.level,14);
+    assert.equal(row.rank,1,'XP dos jogos supera tempo em séries no ranking geral'); assert.equal(row.minutes,0); assert.equal(history.rankingMetric,'xp'); assert.equal(row.games,73); assert.equal(row.xp,3650); assert.equal(row.level,14);
     assert.ok(!JSON.stringify(history).includes('Jogo privado de Lucas'));
   }
   const persisted=await (await call('/progression','GET',undefined,lucas.cookie)).json();

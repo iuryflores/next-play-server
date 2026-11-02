@@ -43,5 +43,19 @@ test('only ranking visits calculate movements; saves skip statistics and same-vi
   assert.equal(invalid.status, 400);
   assert.deepEqual((await stats('third')).rankingChanges, beforeFailure.rankingChanges);
   assert.equal((await stats('fourth')).rankingChanges['movie:watchedGenres'].drama, 0);
+  // A troca de critério não herda movimentos por tempo; empates de XP
+  // continuam compartilhados ao salvar e reler o comparativo da mesma visita.
+  const { compareRankingVisit } = require('../dist/library/ranking-visits');
+  await db.collection('ranking_visits').insertOne({ _id: owner + ':friends', version: 2, visitId: 'legacy', ranks: { friends: { a: 99, b: 1 } }, baseline: null });
+  const tied = { friends: { a: 1, b: 1, c: 3 } };
+  const xpFirst = await compareRankingVisit(db, owner.toString(), 'friends:xp', 'xp-first', tied, true);
+  assert.deepEqual(xpFirst.rankingPositions, tied);
+  assert.deepEqual(xpFirst.rankingChanges, {});
+  const updated = { friends: { a: 1, b: 2, c: 2 } };
+  const xpNext = await compareRankingVisit(db, owner.toString(), 'friends:xp', 'xp-next', updated, true);
+  assert.deepEqual(xpNext.rankingPositions, updated);
+  assert.deepEqual(xpNext.rankingChanges, { friends: { a: 0, b: -1, c: 1 } });
+  assert.deepEqual((await compareRankingVisit(db, owner.toString(), 'friends:xp', 'xp-next', updated, true)).rankingChanges, xpNext.rankingChanges);
+  assert.deepEqual((await compareRankingVisit(db, owner.toString(), 'users:xp', 'xp-first', tied, true)).rankingChanges, {});
 });
 
