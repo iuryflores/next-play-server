@@ -85,4 +85,23 @@ test('episode imports, local tracking, refresh, idempotency and account isolatio
  const callsBefore=externalCalls;await call(path,'GET',undefined,a);assert.equal(externalCalls,callsBefore);
  const untranslated=await (await call(secondPath,'GET',undefined,b)).json();assert.equal(untranslated.seasons[1].episodes[0].name,'Piloto');
  const another=await createApp();await another.listen(0,'127.0.0.1');try{const r=await realFetch(`${await another.getUrl()}/api${path}`,{headers:{cookie:a}});assert.equal((await r.json()).seasons[1].loaded,true);}finally{await another.close();}
+ // Importar duas temporadas no mesmo lote deve montar a resposta apenas uma vez.
+ const {EpisodesService}=require('../dist/episodes/episodes.module');
+ const {CatalogService}=require('../dist/catalog/catalog.module');
+ const service=app.get(EpisodesService),catalog=app.get(CatalogService);
+ const originalList=service.list.bind(service),originalEpisodes=catalog.seasonEpisodes;
+ let responseReads=0,seasonLoads=0;
+ service.list=async(...args)=>{responseReads++;return originalList(...args);};
+ catalog.seasonEpisodes=async()=>{seasonLoads++;return [{number:1,name:'Episódio de teste',airDate:'2020-01-01',overview:'',stillUrl:'',runtime:20}];};
+ try {
+   const owner=(await (await call('/auth/me','GET',undefined,b)).json()).user.id;
+   const itemId=new (require('mongoose').Types.ObjectId)();
+   await db.collection('library_items').insertOne({_id:itemId,ownerId:new (require('mongoose').Types.ObjectId)(owner),kind:'series',status:'active',title:'Série do teste de lote',catalogId:'tmdb:series:99'});
+   await db.collection('series_seasons').insertMany([1,2].map(number=>({catalogId:'tmdb:series:99',number,name:'Temporada '+number,total:1,loaded:false,episodes:[]})));
+   const response=await call(`/library/${itemId}/episodes/watch-many`,'POST',{scope:'series'},b);
+   assert.equal(response.status,201);
+   const result=await response.json();
+   assert.equal(seasonLoads,2);assert.equal(responseReads,1,'o lote não reconstrói votos/progresso a cada importação');
+   assert.equal(result.seasons.length,2);assert.ok(result.seasons.every(season=>season.episodes[0].watchedAt));
+ } finally {service.list=originalList;catalog.seasonEpisodes=originalEpisodes;}
 });

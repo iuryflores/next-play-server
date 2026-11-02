@@ -1,3 +1,4 @@
+import { gameStatusEvent, type GameStatusEvent } from './game-status-event';
 import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation, ApiQuery, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from './vote-identity';
 import { snapshot } from './ranking-snapshot';
@@ -8,17 +9,18 @@ import { compareRankingVisit } from './ranking-visits';
 import { actorVotes, type CastCache } from './actor-votes';
 import { EpisodesModule, EpisodesService } from '../episodes/episodes.module';
 import { Body, Controller, Delete, Get, HttpCode, Injectable, Module, NotFoundException, Param, Query, Patch, Post, Req, ForbiddenException, BadRequestException, ConflictException, OnModuleInit } from '@nestjs/common';
-import { CatalogModule, CatalogService } from '../catalog/catalog.module';
+import { CatalogModule, CatalogService, GameEstimateDto } from '../catalog/catalog.module';
 import { BooksModule, BooksService } from '../books/books.module';
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Connection, Model, Schema as MongoSchema, Types, HydratedDocument } from 'mongoose';
 import { createHash } from 'node:crypto';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsInt, Min, Max, Matches, IsArray, ArrayMaxSize, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { ValidateIf, IsUUID, IsBoolean, IsInt, Min, Max, Matches, IsArray, ArrayMaxSize, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import type { Request } from 'express';
 import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { getConfig } from '../config';
+import { sessionMinutes, type GameSession } from '../game-sessions/game-sessions.module';
 
 const kinds = ['movie', 'series', 'game', 'book'];
 const statuses = ['planned', 'active', 'completed'];
@@ -29,8 +31,10 @@ class LibraryItem {
   @Prop({ maxlength: 200 }) originalTitle?: string;
   @Prop({ required: true, enum: kinds }) kind!: string;
   @Prop({ required: true, enum: statuses }) status!: string;
+  @Prop({ enum: ['none', 'high', 'medium', 'low'], default: 'none' }) priority!: string;
   @Prop({ default: false }) archived!: boolean;
   @Prop({ default: '', maxlength: 1000 }) notes!: string;
+  @Prop({ default: false }) watchedDateUnknown!: boolean;
   @Prop({ type: String }) completedOn?: string | null;
   @Prop({ type: Date }) completedAt?: Date | null;
   @Prop({ type: Date }) episodesCompletedAt?: Date;
@@ -44,7 +48,12 @@ class LibraryItem {
   @Prop({ type: [String], default: [] }) genres!: string[];
   @Prop({ default: '', maxlength: 60 }) platform!: string;
   @Prop({ default: 0, min: 0, max: 6000000 }) playtimeMinutes!: number;
+  @Prop({ type: [Object], default: undefined }) gameStatusHistory?: GameStatusEvent[];
+  @Prop({ type: [Object], default: undefined }) gameSessions?: GameSession[];
+  @Prop({ type: Number }) gameSessionRevision?: number;
+  @Prop({ type: String, default: null }) lastPlayedOn?: string | null;
   @Prop() catalogKey?: string;
+  @Prop() parentGameCatalogId?: string;
   @Prop() catalogId?: string;
   @Prop() coverUrl?: string;
   @Prop() year?: string;
@@ -63,6 +72,8 @@ class LibraryItem {
 const ItemSchema = SchemaFactory.createForClass(LibraryItem);
 ItemSchema.index({ ownerId: 1, updatedAt: -1 });
 ItemSchema.index({ ownerId: 1, catalogKey: 1 });
+// A leitura de votos de episódios localiza primeiro os acompanhamentos da mesma série.
+ItemSchema.index({ catalogId: 1, kind: 1 });
 ItemSchema.index({ ownerId: 1, catalogId: 1 }, { unique: true, partialFilterExpression: { catalogId: { $type: 'string' } } });
 @Schema({ timestamps: true, collection: 'catalog_titles' })
 class CatalogEntry {
@@ -71,6 +82,7 @@ class CatalogEntry {
   @Prop({ maxlength: 200 }) originalTitle?: string;
   @Prop({ required: true, enum: kinds }) kind!: string;
   @Prop({ type: [String], default: [] }) genres!: string[];
+  @Prop() parentGameCatalogId?: string;
   @Prop() catalogId?: string;
   @Prop() coverUrl?: string;
   @Prop() year?: string;
@@ -104,13 +116,25 @@ class CommentDto {
 }
 class ArchiveDto { @ApiProperty({ type: Boolean, required: true })
   @IsBoolean() archived!: boolean; }
+class PriorityDto {
+  @ApiProperty({ enum: ['none', 'high', 'medium', 'low'], description: 'Prioridade privada do backlog; none remove a prioridade. Não altera status ou progresso.' })
+  @IsIn(['none', 'high', 'medium', 'low']) priority!: string;
+}
 class GameTimeDto {
+  @ApiProperty({ required: false, minimum: 0, maximum: 6000000, description: 'Total visto pelo cliente. Quando informado, rejeita alterações concorrentes com 409.' })
+  @IsOptional() @IsInt() @Min(0) @Max(6000000) expectedTotal?: number;
   @ApiProperty({ enum: ['add', 'total'], description: 'add soma minutos ao tempo salvo; total substitui o total acumulado.' })
   @IsIn(['add', 'total']) mode!: 'add' | 'total';
   @ApiProperty({ type: 'integer', minimum: 0, maximum: 6000000, description: 'Minutos inteiros. add exige pelo menos 1; total aceita zero. Total acumulado limitado a 6.000.000 minutos.' })
   @IsInt() @Min(0) @Max(6000000) minutes!: number;
 }
+class GameStatusHistoryQuery {
+  @ApiProperty({ type: String, format: 'uuid', required: false, description: 'Cursor retornado em nextBefore. Até 30 eventos por página, mais recentes primeiro.' })
+  @IsOptional() @IsUUID() before?: string;
+}
 class ItemDto {
+  @ApiProperty({ required: false, enum: ['none', 'high', 'medium', 'low'], description: 'Prioridade do backlog. Ausente preserva na edição; no cadastro usa none.' })
+  @ValidateIf((_object, value) => value !== undefined) @IsIn(['none', 'high', 'medium', 'low']) priority?: string;
   @ApiProperty({ type: String, required: true, minLength: 1, maxLength: 200 })
   @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString() @MinLength(1) @MaxLength(200) title!: string;
@@ -126,7 +150,9 @@ class ItemDto {
   @IsOptional() @IsString() @MaxLength(60) platform?: string;
   @ApiProperty({ type: 'integer', required: false, minimum: 0, maximum: 6000000, description: 'Tempo total jogado em minutos, exclusivo de jogos. Ausente preserva o valor na edição; zero limpa. Não entra no ranking de séries.' })
   @IsOptional() @IsInt() @Min(0) @Max(6000000) playtimeMinutes?: number;
-  @ApiProperty({ type: String, required: false })
+  @ApiProperty({ type: Boolean, required: false, description: 'Somente filmes concluídos: data de consumo desconhecida. Mantém completedAt como registro, sem presumir consumo hoje. Incompatível com completedOn.' })
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() watchedDateUnknown?: boolean;
+  @ApiProperty({ type: String, required: false, format: 'date', description: 'Data real de conclusão. Em filmes, omitir quando watchedDateUnknown=true; informar uma data remove a indicação de desconhecida.' })
   @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/) completedOn?: string;
   @ApiProperty({ type: Number, required: false, minimum: 0, maximum: 5 })
   @IsOptional() @IsInt() @Min(0) @Max(5) stars?: number;
@@ -151,16 +177,20 @@ export class LibraryService implements OnModuleInit {
     }
   }
   private async completion(dto: ItemDto, previous?: LibraryItem, catalogId?: string) {
-    if (dto.status !== 'completed') return { ...emptyVoteIdentity, completedOn: null, completedAt: null, stars: 0, feeling: '', favoriteCharacter: '' };
+    if (dto.status !== 'completed') return { watchedDateUnknown: false, ...emptyVoteIdentity, completedOn: null, completedAt: null, stars: 0, feeling: '', favoriteCharacter: '' };
     const now = new Date();
-    const completedOn = dto.completedOn || previous?.completedOn || now.toISOString().slice(0, 10);
+    // A data de cadastro continua em completedAt; ausência de data de consumo é explícita.
+    if (dto.watchedDateUnknown === true && dto.completedOn) throw new BadRequestException('Escolha uma data ou Não sei a data.');
+    if (dto.watchedDateUnknown === true && (previous?.kind || dto.kind) !== 'movie') throw new BadRequestException('Data desconhecida disponível somente para filmes neste formulário.');
+    const watchedDateUnknown = dto.watchedDateUnknown ?? (dto.completedOn ? false : previous?.watchedDateUnknown || false);
+    const completedOn = watchedDateUnknown ? null : dto.completedOn || previous?.completedOn || now.toISOString().slice(0, 10);
     const date = new Date(completedOn + 'T00:00:00Z');
-    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== completedOn || completedOn > new Date(now.getTime() + 14 * 3600000).toISOString().slice(0, 10)) throw new BadRequestException('Informe uma data de conclusão válida, sem ser no futuro.');
+    if (!watchedDateUnknown && (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== completedOn || completedOn > new Date(now.getTime() + 14 * 3600000).toISOString().slice(0, 10))) throw new BadRequestException('Informe uma data de conclusão válida, sem ser no futuro.');
     const name = (dto.favoriteCharacter ?? previous?.favoriteCharacter ?? '').trim();
     const identity = (!dto.favoriteCastId || dto.favoriteCastId === previous?.favoriteCastId) && name === previous?.favoriteCharacter && previous?.favoriteActorId
       ? { favoriteCastId: previous.favoriteCastId, favoriteActorId: previous.favoriteActorId, favoriteActorName: previous.favoriteActorName, favoriteActorPhoto: previous.favoriteActorPhoto }
       : await voteIdentity(this.connection, catalogId || previous?.catalogId, name, dto.favoriteCastId);
-    return { ...identity, completedOn, completedAt: previous?.completedAt || now, stars: dto.stars ?? previous?.stars ?? 0, feeling: dto.feeling ?? previous?.feeling ?? '', favoriteCharacter: (dto.favoriteCharacter ?? previous?.favoriteCharacter ?? '').trim() };
+    return { ...identity, watchedDateUnknown, completedOn, completedAt: previous?.completedAt || now, stars: dto.stars ?? previous?.stars ?? 0, feeling: dto.feeling ?? previous?.feeling ?? '', favoriteCharacter: (dto.favoriteCharacter ?? previous?.favoriteCharacter ?? '').trim() };
   }
   private async owned(ownerId: string, id: string) {
     const item = await this.items.findOne({ _id: this.id(id), ownerId }).exec();
@@ -183,6 +213,23 @@ export class LibraryService implements OnModuleInit {
     const item = await this.owned(ownerId, id);
     this.catalog.limit(ownerId);
     return { cast: await this.catalog.cast(item.catalogId, language, season, episode) };
+  }
+  async gameAddons(ownerId: string, id: string, language: string, page: number) {
+    const item = await this.owned(ownerId, id);
+    if (item.kind !== 'game') throw new BadRequestException('Conteúdos adicionais disponíveis somente para jogos.');
+    this.catalog.limit(ownerId);
+    const result = await this.catalog.gameAddons(item.catalogId, language, page);
+    const directory = item.catalogId ? await this.connection.collection<{ _id: string; refs: { id: number; contentType: string }[] }>('catalog_game_addons').findOne({ _id: item.catalogId }) : null;
+    const dependent = (directory?.refs || []).filter(ref => ref.contentType !== 'standalone-expansion').map(ref => `igdb:game:${ref.id}`);
+    const tracked = dependent.length ? await this.items.find({ ownerId, kind: 'game', catalogId: { $in: dependent } }).select('-gameSessions -gameStatusHistory').exec() : [];
+    // A resposta privada complementa o cache público; só devolve partes pertencentes à sessão.
+    return { ...result, trackedParts: tracked.map(part => ({ ...this.publicItem(part), parentGameCatalogId: item.catalogId })) };
+  }
+  async gameEstimate(ownerId: string, id: string) {
+    const item = await this.owned(ownerId, id);
+    if (item.kind !== 'game') throw new BadRequestException('A estimativa está disponível somente para jogos.');
+    this.catalog.limit(ownerId);
+    return this.catalog.gameEstimate(item.catalogId);
   }
   async directors(ownerId: string, id: string) {
     const item = await this.owned(ownerId, id);
@@ -210,7 +257,7 @@ export class LibraryService implements OnModuleInit {
     if (!removed) throw new NotFoundException('Comentário não encontrado.');
   }
   private metadata(item: Partial<CatalogEntry>) {
-    return { title: item.title, originalTitle: item.originalTitle, kind: item.kind, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '', bookMetadataVersion: item.bookMetadataVersion || 0 } : {}) };
+    return { title: item.title, originalTitle: item.originalTitle, kind: item.kind, genres: item.genres || [], parentGameCatalogId: item.parentGameCatalogId, catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '', bookMetadataVersion: item.bookMetadataVersion || 0 } : {}) };
   }
   private async remember(item: Partial<CatalogEntry>) {
     const key = item.catalogId || 'local:' + createHash('sha256').update(item.kind + ':' + item.title!.trim().toLocaleLowerCase('pt-BR')).digest('hex').slice(0, 40);
@@ -220,7 +267,7 @@ export class LibraryService implements OnModuleInit {
   }
   async explore(ownerId: string, language = 'pt-BR', page = 1, selectedKind?: string) {
     if (!Number.isInteger(page) || page < 1 || page > (selectedKind === 'book' || !selectedKind ? 50 : 500) || selectedKind && !kinds.includes(selectedKind)) throw new BadRequestException('Página ou categoria inválida.');
-    const owned = await this.items.find({ ownerId }).lean().exec();
+    const owned = await this.items.find({ ownerId }, { gameSessions: 0, gameStatusHistory: 0 }).lean().exec();
     const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('pt-BR').replace(/\s+/g, ' ');
     // Catálogos independentes são consultados em paralelo para um provedor lento
     // não somar seu tempo de espera ao de todas as outras seções.
@@ -264,10 +311,10 @@ export class LibraryService implements OnModuleInit {
     }));
     return { sections };
   }
-  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
+  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: !item.watchedDateUnknown && ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), priority: item.priority || 'none', parentGameCatalogId: item.kind === 'game' ? item.parentGameCatalogId : undefined, platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, lastPlayedOn: item.kind === 'game' ? item.lastPlayedOn || null : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), watchedDateUnknown: Boolean(item.watchedDateUnknown), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
   private id(value: string) { if (!/^[a-f0-9]{24}$/i.test(value)) throw new BadRequestException('Item inválido.'); return value; }
   async list(ownerId: string) {
-    const items = await this.items.find({ ownerId }).sort({ updatedAt: -1, _id: -1 }).exec();
+    const items = await this.items.find({ ownerId }, { gameSessions: 0, gameStatusHistory: 0 }).sort({ updatedAt: -1, _id: -1 }).exec();
     // A coleção é uma leitura local: metadados ausentes não bloqueiam a volta
     // à tela com consultas externas ou gravações título a título no Atlas.
     const missingRelease = items.filter(item => item.releaseDate === undefined && item.catalogKey);
@@ -277,6 +324,16 @@ export class LibraryService implements OnModuleInit {
       for (const item of missingRelease) {
         const title = releases.get(item.catalogKey!);
         if (title?.releaseDate !== undefined) { item.releaseDate = title.releaseDate; item.unreleased = title.unreleased; }
+      }
+    }
+    const games = items.filter(item => item.kind === 'game' && item.catalogId?.startsWith('igdb:game:'));
+    if (games.length) {
+      // Reconhece DLCs antigas por vínculos já consultados, sem rede nem migração de horas no carregamento.
+      const directories = await this.connection.collection<{ _id: string; refs: { id: number; contentType: string }[] }>('catalog_game_addons').find({ 'refs.id': { $in: games.map(item => Number(item.catalogId!.split(':')[2])) } }).toArray();
+      for (const game of games) {
+        const id = Number(game.catalogId!.split(':')[2]);
+        const parent = directories.find(row => row._id !== game.catalogId && row.refs.some(ref => ref.id === id && ref.contentType !== 'standalone-expansion'));
+        if (parent) game.parentGameCatalogId = parent._id;
       }
     }
     const series = items.filter(item => item.kind === 'series' && item.catalogId?.startsWith('tmdb:series:'));
@@ -340,7 +397,7 @@ export class LibraryService implements OnModuleInit {
     return { productionCompanies };
   }
   async stats(ownerId: string) {
-    const items = await this.items.find({ ownerId }).lean().exec();
+    const items = await this.items.find({ ownerId }, { gameSessions: 0, gameStatusHistory: 0 }).lean().exec();
     const series = items.filter(item => item.kind === 'series');
     const [rows, seasons] = await Promise.all([
       this.connection.collection('episode_progress').find({ itemId: { $in: series.map(item => item._id) } }).toArray(),
@@ -456,12 +513,12 @@ export class LibraryService implements OnModuleInit {
     const details = stored ? this.metadata(stored) : catalogId ? catalogId.startsWith('googlebooks:book:') ? await this.books.detail(catalogId) : await this.catalog.detail(catalogId) : undefined;
     if (details && details.kind !== dto.kind) throw new BadRequestException('A categoria não corresponde ao título selecionado.');
     // Acompanhamento de leitura registra intenção/progresso; nunca cria ou altera exemplares no acervo.
-    const payload = { ...manual, ...details, ...(dto.kind === 'book' ? { bookMetadataVersion: catalogId ? 1 : 0 } : {}), genres: [...new Set((dto.kind === 'game' ? dto.genres ?? details?.genres ?? [] : details?.genres ?? manual.genres ?? []).map(value => value.trim()).filter(Boolean))], playtimeMinutes: dto.kind === 'game' ? dto.playtimeMinutes ?? 0 : 0, platform: dto.kind === 'game' ? (dto.platform || '').trim() : '' };
+    const payload = { ...manual, ...details, parentGameCatalogId: dto.kind === 'game' && catalogId ? await this.catalog.cachedGameParent(catalogId) : undefined, priority: dto.priority || 'none', ...(dto.kind === 'book' ? { bookMetadataVersion: catalogId ? 1 : 0 } : {}), genres: [...new Set((dto.kind === 'game' ? dto.genres ?? details?.genres ?? [] : details?.genres ?? manual.genres ?? []).map(value => value.trim()).filter(Boolean))], playtimeMinutes: dto.kind === 'game' ? dto.playtimeMinutes ?? 0 : 0, platform: dto.kind === 'game' ? (dto.platform || '').trim() : '' };
     const completion = await this.completion(dto, undefined, catalogId);
     const allEpisodes = dto.status === 'completed' && payload.kind === 'series' && details?.catalogId?.startsWith('tmdb:series:') ? await this.episodes.prepareCompletion(details.catalogId!) : null;
     const catalogKey = await this.remember(payload);
     if (await this.items.exists({ ownerId, catalogKey })) throw new ConflictException('Este título já está na sua coleção.');
-    try { const item = await this.items.create({ ...payload, ...completion, catalogKey, ownerId }); if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); } return this.publicItem(item); }
+    try { const item = await this.items.create({ ...payload, ...completion, ...(payload.kind === 'game' ? { gameStatusHistory: [gameStatusEvent('added', null, dto.status)] } : {}), catalogKey, ownerId }); if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); } return this.publicItem(item); }
     catch (error) { if ((error as { code?: number }).code === 11000) throw new ConflictException('Este título já está na sua coleção.'); throw error; }
   }
   async update(ownerId: string, id: string, dto: ItemDto) {
@@ -472,8 +529,11 @@ export class LibraryService implements OnModuleInit {
     const allEpisodes = dto.status === 'completed' && existing.kind === 'series' && existing.catalogId?.startsWith('tmdb:series:') && (existing.status !== 'completed' || !existing.episodesCompletedAt) ? await this.episodes.prepareCompletion(existing.catalogId) : null;
     // Tempo jogado pertence ao acompanhamento e permanece ao mudar o status, mesmo sem avaliação de conclusão.
     const changes = existing.catalogId ? { status: dto.status, notes: dto.notes ?? '', genres: existing.kind === 'book' ? existing.genres : dto.genres ?? existing.genres } : { title: dto.title, kind: dto.kind, status: dto.status, notes: dto.notes ?? '', genres: dto.genres ?? existing.genres };
-    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { ...changes, playtimeMinutes: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? dto.playtimeMinutes ?? existing.playtimeMinutes ?? 0 : 0, platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
-    if (!item) throw new NotFoundException('Item não encontrado.');
+    const isGame = (existing.catalogId ? existing.kind : dto.kind) === 'game';
+    if (!isGame && existing.gameSessions?.length) throw new BadRequestException('Remova as sessões antes de alterar a categoria do jogo.');
+    if (isGame && dto.playtimeMinutes !== undefined && dto.playtimeMinutes < sessionMinutes(existing.gameSessions)) throw new BadRequestException('O total não pode ser menor que as sessões registradas. Edite as sessões primeiro.');
+    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId, ...(isGame ? { status: existing.status } : {}), ...(isGame && dto.playtimeMinutes !== undefined ? { $expr: { $and: [{ $eq: [{ $ifNull: ['$gameSessionRevision', 0] }, existing.gameSessionRevision || 0] }, { $eq: [{ $ifNull: ['$playtimeMinutes', 0] }, existing.playtimeMinutes || 0] }] } } : {}) }, { ...(isGame && existing.status !== dto.status ? { $push: { gameStatusHistory: gameStatusEvent('status', existing.status, dto.status) } } : {}), ...(isGame && dto.playtimeMinutes !== undefined ? { $inc: { gameSessionRevision: 1 } } : {}), $set: { ...changes, ...(dto.priority !== undefined ? { priority: dto.priority } : {}), ...(!isGame ? { playtimeMinutes: 0, lastPlayedOn: null } : dto.playtimeMinutes !== undefined ? { playtimeMinutes: dto.playtimeMinutes } : {}), platform: (existing.catalogId ? existing.kind : dto.kind) === 'game' ? (dto.platform ?? existing.platform ?? '').trim() : '', ...await this.completion(dto, existing) } }, { returnDocument: 'after', runValidators: true }).exec();
+    if (!item) throw new ConflictException('O acompanhamento mudou em outra aba. Atualize e tente novamente.');
     if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); }
     const key = await this.remember(item);
     await this.titles.updateOne({ key }, { $set: this.metadata(item) });
@@ -484,21 +544,49 @@ export class LibraryService implements OnModuleInit {
     if (dto.mode === 'add' && dto.minutes === 0) throw new BadRequestException('Informe pelo menos um minuto jogado.');
     const filter = { _id: this.id(id), ownerId, kind: 'game' };
     // A soma ocorre no banco, evitando perder horas quando duas abas registram tempo juntas.
-    const item = await this.items.findOneAndUpdate({ ...filter, ...(dto.mode === 'add' ? { $or: [{ playtimeMinutes: { $lte: 6000000 - dto.minutes } }, { playtimeMinutes: { $exists: false } }] } : {}) }, [
+    const item = await this.items.findOneAndUpdate({ ...filter, ...(dto.expectedTotal !== undefined ? { $and: [{ $expr: { $eq: [{ $ifNull: ['$playtimeMinutes', 0] }, dto.expectedTotal] } }] } : {}), ...(dto.mode === 'add' ? { $or: [{ playtimeMinutes: { $lte: 6000000 - dto.minutes } }, { playtimeMinutes: { $exists: false } }] } : { $expr: { $gte: [dto.minutes, { $sum: '$gameSessions.minutes' }] } }) }, [
       { $set: {
+        // Evento e estado são gravados juntos; reenvios com o jogo já ativo não criam outro início.
+        gameStatusHistory: { $concatArrays: [{ $ifNull: ['$gameStatusHistory', []] }, { $cond: [{ $and: [{ $eq: ['$status', 'planned'] }, { $gt: [dto.minutes, 0] }] }, { $literal: [gameStatusEvent('status', 'planned', 'active', 'time-adjustment')] }, []] }] },
         playtimeMinutes: dto.mode === 'add' ? { $add: [{ $ifNull: ['$playtimeMinutes', 0] }, dto.minutes] } : dto.minutes,
+        // Ajustes sem data alteram o saldo anterior e não inventam sessões.
+        gameSessionRevision: { $add: [{ $ifNull: ['$gameSessionRevision', 0] }, 1] },
         // Jogar um título planejado inicia o acompanhamento; jogos concluídos mantêm sua conclusão.
         status: dto.minutes > 0 ? { $cond: [{ $eq: ['$status', 'planned'] }, 'active', '$status'] } : '$status',
       } },
     ], { returnDocument: 'after', updatePipeline: true }).exec();
     if (!item) {
-      if (await this.items.exists(filter)) throw new BadRequestException('O tempo total ultrapassa o limite permitido.');
+      const current = await this.items.findOne(filter).select('playtimeMinutes').lean().exec();
+      if (current && dto.expectedTotal !== undefined && dto.expectedTotal !== (current.playtimeMinutes || 0)) throw new ConflictException('O total mudou em outra aba. Atualize e tente novamente.');
+      if (current) throw new BadRequestException('O total deve respeitar o limite e não pode ser menor que as sessões registradas.');
       throw new NotFoundException('Jogo não encontrado.');
     }
     return this.publicItem(item);
   }
   async archive(ownerId: string, id: string, archived: boolean) {
-    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { archived } }, { returnDocument: 'after', runValidators: true }).exec();
+    const previous = await this.owned(ownerId, id);
+    if (Boolean(previous.archived) === archived) return this.publicItem(previous);
+    // A comparação protege o motivo registrado contra uma mudança concorrente de status/arquivo.
+    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId, ...(previous.kind === 'game' ? { status: previous.status, $expr: { $eq: [{ $ifNull: ['$archived', false] }, Boolean(previous.archived)] } } : {}) }, {
+      $set: { archived },
+      ...(previous.kind === 'game' ? { $push: { gameStatusHistory: gameStatusEvent(archived ? 'archived' : 'restored', previous.status, previous.status) } } : {}),
+    }, { returnDocument: 'after', runValidators: true }).exec();
+    if (!item) throw new ConflictException('O acompanhamento mudou em outra aba. Atualize e tente novamente.');
+    return this.publicItem(item);
+  }
+  async gameStatusHistory(ownerId: string, id: string, before?: string) {
+    const item = await this.items.findOne({ _id: this.id(id), ownerId }).select('kind gameStatusHistory').lean().exec();
+    if (!item) throw new NotFoundException('Item não encontrado.');
+    if (item.kind !== 'game') throw new BadRequestException('Histórico disponível somente para jogos.');
+    const history = item.gameStatusHistory || [];
+    const end = before ? history.findIndex(event => event.id === before) : history.length;
+    if (end < 0) throw new BadRequestException('Cursor de histórico inválido para este jogo.');
+    const start = Math.max(0, end - 30);
+    return { events: history.slice(start, end).reverse(), nextBefore: start > 0 ? history[start].id : null, earlierHistoryUnknown: history[0]?.type !== 'added' };
+  }
+  async priority(ownerId: string, id: string, priority: string) {
+    // A alteração isolada evita regravar avaliações, sessões e metadados do catálogo.
+    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { priority } }, { returnDocument: 'after', runValidators: true }).exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
     return this.publicItem(item);
   }
@@ -523,6 +611,34 @@ class LibraryController {
   @Post(':id/comments') @HttpCode(204) async comment(@Req() request: Request, @Param('id') id: string, @Body() dto: CommentDto) { await this.library.comment(await this.owner(request), id, dto); }
   @Delete(':id/comments/:commentId') @HttpCode(204) async deleteComment(@Req() request: Request, @Param('id') id: string, @Param('commentId') commentId: string) { await this.library.deleteComment(await this.owner(request), id, commentId); }
   @Get(':id/upcoming') async upcoming(@Req() request: Request, @Param('id') id: string) { return this.library.upcoming(await this.owner(request), id, await this.language(request)); }
+  @Get(':id/game-status-history')
+  @ApiOperation({ summary: 'Consultar histórico privado de status do jogo', description: 'Registra somente alterações novas: adição, mudança real de status, arquivamento/restauração e início automático ao registrar horas/sessão. Datas recordedAt são do servidor no momento da alteração, nunca datas antigas de consumo. Jogos legados não recebem eventos inventados. Cada DLC mantém seu próprio histórico. Eventos gravados atomicamente com a alteração; consultas e reavaliações sem mudança de estado não criam eventos.' })
+  @ApiOkResponse({ description: 'events: até 30 objetos com id UUID, type (added/status/archived/restored), fromStatus nullable, toStatus (planned/active/completed), source (manual/session/time-adjustment), recordedAt ISO. Mais recentes primeiro. nextBefore UUID ou null; earlierHistoryUnknown indica ausência de registro da adição original.' })
+  @ApiResponse({ status: 400, description: 'Item não é jogo, ID/cursor inválido ou cursor de outro jogo.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 404, description: 'Item inexistente ou de outra conta.' })
+  async gameStatusHistory(@Req() request: Request, @Param('id') id: string, @Query() query: GameStatusHistoryQuery) { return this.library.gameStatusHistory(await this.owner(request), id, query.before); }
+  @Get(':id/game-addons')
+  @ApiOperation({ summary: 'Consultar expansões e DLCs do jogo', description: 'Somente o dono. Vínculos explícitos da IGDB: DLC, expansão e expansão independente. Consulta sob demanda com cache público por jogo/idioma/página por um dia. Não adiciona conteúdos automaticamente nem modifica o jogo principal. Jogo sem IGDB retorna supported=false. Falhas do provedor não são armazenadas como lista vazia.' })
+  @ApiQuery({ name: 'page', required: false, schema: { type: 'integer', minimum: 1, maximum: 500, default: 1 } })
+  @ApiOkResponse({ description: 'supported, results (até 20 títulos de catálogo com contentType: dlc/expansion/standalone-expansion), total de vínculos e nextPage (número ou null). Títulos removidos podem resultar em página vazia com nextPage. trackedParts contém somente os acompanhamentos dependentes do dono, com parentGameCatalogId e tempos separados, para agrupar cards sem duplicar estatísticas.' })
+  @ApiResponse({ status: 400, description: 'Página inválida ou item não é jogo.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 404, description: 'Item inexistente ou de outra conta.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas atingido.' })
+  @ApiResponse({ status: 502, description: 'Resposta inválida ou falha da IGDB.' })
+  @ApiResponse({ status: 503, description: 'IGDB indisponível ou sem configuração.' })
+  async gameAddons(@Req() request: Request, @Param('id') id: string, @Query('page') page?: string) { return this.library.gameAddons(await this.owner(request), id, await this.language(request), page === undefined ? 1 : Number(page)); }
+  @Get(':id/game-estimate')
+  @ApiOperation({ summary: 'Consultar estimativas de duração do jogo pela IGDB', description: 'Somente o dono. Consulta sob demanda, sem alterar horas, conclusão ou XP. Retorna minutos para história principal, extras e 100%, e quantidade de contribuições. Tempos ausentes/zero/inválidos são null. Jogo sem vínculo IGDB retorna supported=false. Cache público por jogo por sete dias; ausência por um dia. Falhas do provedor não são armazenadas como ausência.' })
+  @ApiOkResponse({ type: GameEstimateDto })
+  @ApiResponse({ status: 400, description: 'Item inválido ou não é jogo.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 404, description: 'Item inexistente ou de outra conta.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas atingido.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do provedor.' })
+  @ApiResponse({ status: 503, description: 'IGDB indisponível ou sem credenciais no servidor.' })
+  async gameEstimate(@Req() request: Request, @Param('id') id: string) { return this.library.gameEstimate(await this.owner(request), id); }
   @Get(':id/directors') async directors(@Req() request: Request, @Param('id') id: string) { return this.library.directors(await this.owner(request), id); }
   @Get(':id/trailer') async trailer(@Req() request: Request, @Param('id') id: string) { return this.library.trailer(await this.owner(request), id, await this.language(request)); }
   @Post(':id/production-companies') async movieCompanies(@Req() request: Request, @Param('id') id: string) { return this.library.movieCompanies(await this.owner(request), id); }
@@ -538,22 +654,33 @@ class LibraryController {
   @ApiResponse({ status: 429, description: 'Limite de requisições atingido.' })
   async explore(@Req() request: Request, @Query('page') page?: string, @Query('kind') kind?: string) { const owner = await this.owner(request); const language = await this.language(request); this.catalog.limit(owner); const result = await this.library.explore(owner, language, page === undefined ? 1 : Number(page), kind); return { sections: await Promise.all(result.sections.map(async section => ({ ...section, results: 'source' in section && (section.source === 'tmdb' || section.source === 'googlebooks') ? section.results : await Promise.all(section.results.map(item => this.catalog.localize(item, language))) }))) }; }
   @Get()
-  @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Livros não são importados automaticamente da Minha Coleção.' })
+  @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Jogos podem incluir parentGameCatalogId, vínculo público IGDB de DLC/expansão dependente; playtimeMinutes permanece exclusivo de cada parte, sem total duplicado. Livros não são importados automaticamente da Minha Coleção.' })
   async list(@Req() request: Request) { return { items: await this.catalog.localizeMany(await this.library.list(await this.owner(request)), await this.language(request)) }; }
   @Post()
   @ApiOperation({ summary: 'Adicionar obra ao acompanhamento', description: 'Livros aceitam cadastro manual ou Google Books e estados Quero ler/Lendo/Lido. Uma obra por usuário/referência; não cria cópia possuída. Conclusão aceita data e nota opcionais.' })
   async create(@Req() request: Request, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.create(await this.owner(request), dto), await this.language(request)) }; }
   @Patch(':id')
+  @ApiResponse({ status: 409, description: 'O acompanhamento ou tempo de jogo mudou durante a edição; atualize antes de reenviar.' })
   @ApiOperation({ summary: 'Atualizar acompanhamento privado', description: 'Para livros, altera estado de leitura, data, nota e anotações. Voltar de Lido remove os dados de conclusão. Somente dono; não altera exemplares da Minha Coleção.' })
   async update(@Req() request: Request, @Param('id') id: string, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.update(await this.owner(request), id, dto), await this.language(request)) }; }
   @Delete(':id') @HttpCode(204) async remove(@Req() request: Request, @Param('id') id: string) { await this.library.remove(await this.owner(request), id); }
+  @Patch(':id/priority')
+  @ApiOperation({ summary: 'Alterar prioridade privada do backlog', description: 'Alta, média, baixa ou nenhuma. Não altera conclusão, progresso, notas, horas ou sessões. A ordenação por prioridade se aplica à tela Para depois. Não concede XP.' })
+  @ApiOkResponse({ description: 'Objeto item atualizado, incluindo priority.' })
+  @ApiResponse({ status: 400, description: 'Prioridade inválida ou campos não permitidos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 403, description: 'Origem não permitida.' })
+  @ApiResponse({ status: 404, description: 'Item inexistente ou de outra conta.' })
+  async priority(@Req() request: Request, @Param('id') id: string, @Body() dto: PriorityDto) { return { item: await this.catalog.localize(await this.library.priority(await this.owner(request), id, dto.priority), await this.language(request), false) }; }
   @Patch(':id/playtime')
-  @ApiOperation({ summary: 'Registrar tempo jogado rapidamente', description: 'Somente jogos do dono. Soma minutos atomicamente ou substitui o total. Não altera notas, plataforma ou conclusão. Jogos planejados passam para Jogando. Não cria histórico diário de sessões.' })
+  @ApiResponse({ status: 409, description: 'expectedTotal não corresponde ao total atual; atualize antes de ajustar o saldo.' })
+  @ApiOperation({ summary: 'Registrar tempo jogado rapidamente', description: 'Somente jogos do dono. Soma minutos atomicamente ou substitui o total. Não altera notas, plataforma ou conclusão. Jogos planejados passam para Jogando. Ajuste sem data: preserva as sessões e altera somente o saldo anterior. O novo total não pode ser menor que a soma das sessões; para registrar um dia de jogo use /game-sessions.' })
   @ApiOkResponse({ description: 'Objeto item atualizado, com playtimeMinutes em minutos.' })
   @ApiResponse({ status: 400, description: 'Modo/minutos inválidos, soma zero ou total acima de 6.000.000 minutos.' })
   @ApiResponse({ status: 404, description: 'Jogo inexistente, categoria diferente ou item de outra conta.' })
   @ApiResponse({ status: 403, description: 'Origem não permitida.' })
   async gameTime(@Req() request: Request, @Param('id') id: string, @Body() dto: GameTimeDto) { return { item: await this.catalog.localize(await this.library.gameTime(await this.owner(request), id, dto), await this.language(request)) }; }
+  @ApiResponse({ status: 409, description: 'Status ou arquivamento alterado simultaneamente; atualize antes de reenviar.' })
   @Post(':id/archive') @HttpCode(200) async archive(@Req() request: Request, @Param('id') id: string, @Body() dto: ArchiveDto) { return { item: await this.catalog.localize(await this.library.archive(await this.owner(request), id, dto.archived), await this.language(request)) }; }
 }
 @Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })

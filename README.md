@@ -57,6 +57,45 @@ endpoints, mantenha os decorators OpenAPI e os comentários relevantes atualizad
 | POST | `/api/auth/google/start` | 503, reservado para configuração posterior |
 | POST | `/api/auth/phone/start` | 503, reservado para configuração posterior |
 
+## Prioridade no backlog (S193)
+
+O acompanhamento guarda `priority`: `none` (padrão), `high`, `medium` ou `low`.
+Cadastro/edição aceitam o campo opcional; omitir na edição preserva a escolha.
+`PATCH /api/library/:id/priority` altera somente a prioridade privada, com sessão
+e origem autorizada, sem regravar notas, status, avaliações ou sessões de jogo.
+Não concede XP e não publica a prioridade no ranking.
+
+Na tela Para depois, a prioridade precede os critérios de desempate existentes:
+alta, média, baixa e nenhuma. As outras telas mantêm sua ordenação. O menu do
+cartão e o editor permitem alterar/remover a prioridade em todas as mídias.
+O indicador aparece nos títulos planejados, inclusive no formato enxuto.
+
+Validação: `node --test test/priority.test.cjs` após o build.
+
+## Sessões de jogos
+
+`GET /api/library/:id/game-sessions` consulta o histórico privado, saldo anterior,
+total, última data jogada e quantidade de sessões. A página retorna 30 sessões;
+`nextOffset` indica a próxima página. `POST` registra data e duração ou a diferença
+positiva de um novo total. O UUID `id` evita duplicação ao reenviar a solicitação;
+no modo `total`, `expectedTotal` detecta alterações em outra aba.
+
+`PATCH /api/library/:id/game-sessions/:sessionId` edita o dia/duração e `DELETE`
+remove a sessão descontando sua duração. As operações recalculam a última data,
+preservam notas/plataforma/conclusão e mantêm as horas antigas sem data como saldo
+anterior. Há múltiplas sessões por dia. Datas devem existir e não podem estar no
+futuro no fuso IANA informado. Limites: 1–1440 minutos por sessão, até 10.000 sessões
+por jogo e 6.000.000 minutos acumulados. Todas as mutações exigem origem autorizada.
+
+O histórico e o total ficam no mesmo documento, com revisão otimista para impedir
+perda de horas em gravações concorrentes, sem exigir replica set/transações. Listas
+e estatísticas não carregam o histórico inteiro. O endpoint antigo `PATCH
+/api/library/:id/playtime` ajusta apenas o saldo sem data; o total informado não
+pode ser menor que as sessões. `expectedTotal` opcional detecta conflito com 409.
+Correções/exclusões não revogam XP já reconhecido, conforme a regra geral do perfil.
+
+Validação isolada: `node --test test/game-sessions.test.cjs` após o build.
+
 ## Nível geral e experiência do perfil
 
 `POST /api/progression/sync` reconhece o histórico da sessão no MongoDB;
@@ -77,6 +116,12 @@ com maior quantidade de horas reconhecida. Editar, desmarcar, excluir ou
 recadastrar a mesma identidade não duplica nem remove XP reconhecido. Os
 carimbos de data indicam reconhecimento no XP, inclusive para importações
 retroativas, e não inventam datas de consumo. A origem do XP é privada.
+
+Os rankings de amigos e geral reconhecem o histórico elegível dos participantes
+antes de agregar o XP, sem depender de login recente de cada conta. O escopo de
+amigos não inclui contas externas àquele ranking. Consultas repetidas preservam
+os créditos; apenas atividades novas ou aumentos de horas geram gravação. O
+processamento usa até quatro contas simultâneas e publica somente os totais.
 
 Validação isolada: `node --test test/progression.test.cjs` após o build.
 

@@ -3,7 +3,7 @@ import { voteIdentity, emptyVoteIdentity } from '../library/vote-identity';
 import { Body, BadRequestException, Controller, ForbiddenException, Get, Injectable, Module, NotFoundException, OnModuleInit, Param, Patch, Post, Req } from '@nestjs/common';
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
-import { IsIn, IsBoolean, IsInt, IsOptional, Min, Max, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsBoolean, IsInt, IsOptional, Min, Max, IsString, MaxLength, ValidateIf } from 'class-validator';
 import type { Request } from 'express';
 import { CatalogModule, CatalogService } from '../catalog/catalog.module';
 import { AuthModule } from '../auth/auth.module';
@@ -26,7 +26,10 @@ class Progress {
   @Prop({ type: Types.ObjectId, required: true }) itemId!: Types.ObjectId;
   @Prop({ required: true }) season!: number;
   @Prop({ required: true }) episode!: number;
-  @Prop({ required: true }) watchedAt!: Date;
+  // O registro existe mesmo sem data conhecida; recordedAt não representa consumo.
+  @Prop({ type: Date, default: null }) watchedAt!: Date | null;
+  @Prop({ type: Date }) recordedAt?: Date;
+  @Prop({ default: false }) watchedDateUnknown!: boolean;
   // Ausente no legado; somente marcações individuais novas podem conceder maratonas.
   @Prop({ enum: ['individual', 'bulk'] }) watchOrigin?: string;
   @Prop({ default: 0, min: 0, max: 5 }) stars!: number;
@@ -43,6 +46,8 @@ class ImportDto { @ApiProperty({ type: Number, required: false, minimum: 0, maxi
   @IsOptional() @IsInt() @Min(0) @Max(10000) season?: number; @ApiProperty({ type: Boolean, required: false })
   @IsOptional() @IsBoolean() refresh?: boolean; }
 class ReviewDto {
+  @ApiProperty({ type: Boolean, required: false, description: 'Data de consumo desconhecida: watchedAt fica null; recordedAt guarda o registro. O episódio continua assistido e conta para totais/XP, mas não para metas diárias. Omitir preserva a data existente. Em lotes aplica apenas aos novos registros.' })
+  @ValidateIf((_object, value) => value !== undefined) @IsBoolean() watchedDateUnknown?: boolean;
   @ApiProperty({ type: Number, required: false, minimum: 0, maximum: 5 })
   @IsOptional() @IsInt() @Min(0) @Max(5) stars?: number;
   @ApiProperty({ type: String, required: false, enum: ['', 'loved', 'liked', 'neutral', 'disliked', 'scared', 'happy', 'amused', 'sad', 'surprised', 'excited', 'moved', 'bored'] })
@@ -117,9 +122,12 @@ export class EpisodesService implements OnModuleInit {
     const item = await this.owned(ownerId, id);
     const supported = typeof item.catalogId === 'string' && item.catalogId.startsWith('tmdb:series:');
     if (!supported) return { supported: false, seasons: [] };
-    const seasons = await this.seasons.find({ catalogId: item.catalogId }).sort({ number: 1 }).lean().exec();
-    const progress = await this.progress.find({ itemId: item._id }).lean().exec();
-    const user = await this.connection.collection('users').findOne({ _id: new Types.ObjectId(ownerId) }, { projection: { language: 1 } });
+    const [seasons, progress, user, participants] = await Promise.all([
+      this.seasons.find({ catalogId: item.catalogId }).sort({ number: 1 }).lean().exec(),
+      this.progress.find({ itemId: item._id }).lean().exec(),
+      this.connection.collection('users').findOne({ _id: new Types.ObjectId(ownerId) }, { projection: { language: 1 } }),
+      this.connection.collection('library_items').find({ catalogId: item.catalogId, kind: 'series' }, { projection: { _id: 1 } }).toArray(),
+    ]);
     const language = user?.language || 'pt-BR';
     if (language !== 'pt-BR') {
       for (const season of seasons) {
@@ -130,19 +138,18 @@ export class EpisodesService implements OnModuleInit {
       }
     }
     const votes = await this.progress.aggregate<{ _id: { season: number; episode: number; character: string }; name: string; count: number }>([
-      { $match: { favoriteCharacter: { $type: 'string', $ne: '' } } },
-      { $lookup: { from: 'library_items', localField: 'itemId', foreignField: '_id', as: 'title' } },
-      { $match: { 'title.catalogId': item.catalogId } },
+      // Usa o índice por itemId antes de agrupar votos, sem varrer avaliações de todas as séries.
+      { $match: { itemId: { $in: participants.map(row => row._id) }, favoriteCharacter: { $type: 'string', $ne: '' } } },
       { $group: { _id: { season: '$season', episode: '$episode', character: { $toLower: { $trim: { input: '$favoriteCharacter' } } } }, name: { $first: '$favoriteCharacter' }, count: { $sum: 1 } } },
       { $sort: { count: -1, name: 1 } },
     ]);
     const watched = new Map(progress.map(row => [row.season + ':' + row.episode, row]));
     return { supported: true, seasons: seasons.map(season => ({ number: season.number, name: season.name, total: season.total, loaded: season.loaded, episodes: [...season.episodes].sort((a, b) => a.number - b.number).map(episode => {
       const review = watched.get(season.number + ':' + episode.number);
-      return { ...episode, watchedAt: review?.watchedAt || null, stars: review?.stars || 0, feeling: review?.feeling || '', favoriteCharacter: review?.favoriteCharacter || '', favoriteCastId: review?.favoriteCastId || '', votes: votes.filter(vote => vote._id.season === season.number && vote._id.episode === episode.number).slice(0, 10).map(vote => ({ name: vote.name, count: vote.count })) };
+      return { ...episode, watched: Boolean(review), watchedDateUnknown: Boolean(review?.watchedDateUnknown), watchedAt: review?.watchedAt || null, stars: review?.stars || 0, feeling: review?.feeling || '', favoriteCharacter: review?.favoriteCharacter || '', favoriteCastId: review?.favoriteCastId || '', votes: votes.filter(vote => vote._id.season === season.number && vote._id.episode === episode.number).slice(0, 10).map(vote => ({ name: vote.name, count: vote.count })) };
     }) })) };
   }
-  async import(ownerId: string, id: string, dto: ImportDto) {
+  async import(ownerId: string, id: string, dto: ImportDto, readBack = true) {
     const item = await this.owned(ownerId, id);
     if (typeof item.catalogId !== 'string' || !item.catalogId.startsWith('tmdb:series:')) throw new BadRequestException('Importe a série pelo catálogo TMDB para acompanhar episódios.');
     this.catalog.limit(ownerId);
@@ -162,18 +169,19 @@ export class EpisodesService implements OnModuleInit {
         await this.seasons.updateOne({ _id: season._id }, { $set: { episodes, total: episodes.length, loaded: true } });
       }
     }
-    return this.list(ownerId, id);
+    // Lotes só precisam carregar os metadados: a resposta completa é montada uma vez ao final.
+    if (readBack) return this.list(ownerId, id);
   }
   async watchMany(ownerId: string, id: string, dto: BulkWatchDto) {
     const item = await this.owned(ownerId, id);
     if (typeof item.catalogId !== 'string' || !item.catalogId.startsWith('tmdb:series:')) throw new BadRequestException('Esta série precisa estar vinculada ao TMDB.');
     if (dto.scope !== 'series' && dto.season == null) throw new BadRequestException('Informe a temporada.');
     if (dto.scope === 'through' && dto.episode == null) throw new BadRequestException('Informe o episódio.');
-    if (!(await this.seasons.exists({ catalogId: item.catalogId }))) await this.import(ownerId, id, {});
+    if (!(await this.seasons.exists({ catalogId: item.catalogId }))) await this.import(ownerId, id, {}, false);
     const directory = await this.seasons.find({ catalogId: item.catalogId }).sort({ number: 1 }).exec();
     if (dto.scope !== 'series' && !directory.some(season => season.number === dto.season)) throw new NotFoundException('Temporada não encontrada.');
     const included = directory.filter(season => dto.scope === 'series' ? season.number > 0 : dto.scope === 'season' ? season.number === dto.season : dto.season === 0 ? season.number === 0 : season.number > 0 && season.number <= dto.season!);
-    for (const season of included) if (!season.loaded) await this.import(ownerId, id, { season: season.number });
+    for (const season of included) if (!season.loaded) await this.import(ownerId, id, { season: season.number }, false);
     const seasons = await this.seasons.find({ catalogId: item.catalogId, number: { $in: included.map(season => season.number) } }).exec();
     const today = new Date().toISOString().slice(0, 10);
     if (dto.scope === 'through') {
@@ -185,8 +193,8 @@ export class EpisodesService implements OnModuleInit {
     if (!episodes.length) throw new BadRequestException('Nenhum episódio já lançado nesta seleção.');
     const now = new Date();
     const identity = dto.scope === 'season' && dto.favoriteCharacter?.trim() ? await voteIdentity(this.connection, item.catalogId, dto.favoriteCharacter.trim(), dto.favoriteCastId) : {};
-    await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId: item._id, ...episode }, update: { $setOnInsert: { itemId: item._id, ...episode, watchedAt: now, watchOrigin: 'bulk' }, ...(dto.scope === 'season' && dto.favoriteCharacter?.trim() ? { $set: { favoriteCharacter: dto.favoriteCharacter.trim(), ...identity } } : {}) }, upsert: true } })));
-    if (dto.scope === 'series') await this.connection.collection('library_items').updateOne({ _id: item._id }, { $set: { status: 'completed', completedOn: item.completedOn || today, completedAt: item.completedAt || now, episodesCompletedAt: now } });
+    await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId: item._id, ...episode }, update: { $setOnInsert: { itemId: item._id, ...episode, watchedAt: dto.watchedDateUnknown ? null : now, recordedAt: now, watchedDateUnknown: dto.watchedDateUnknown || false, watchOrigin: 'bulk' }, ...(dto.scope === 'season' && dto.favoriteCharacter?.trim() ? { $set: { favoriteCharacter: dto.favoriteCharacter.trim(), ...identity } } : {}) }, upsert: true } })));
+    if (dto.scope === 'series') await this.connection.collection('library_items').updateOne({ _id: item._id }, { $set: { status: 'completed', watchedDateUnknown: item.status === 'completed' ? Boolean(item.watchedDateUnknown) : Boolean(dto.watchedDateUnknown), completedOn: (item.status === 'completed' ? item.watchedDateUnknown : dto.watchedDateUnknown) ? null : item.completedOn || today, completedAt: item.completedAt || now, episodesCompletedAt: now } });
     else await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active' } });
     if (dto.scope === 'through') return this.watch(ownerId, id, { season: dto.season!, episode: dto.episode!, watched: true, stars: dto.stars, feeling: dto.feeling, favoriteCharacter: dto.favoriteCharacter, favoriteCastId: dto.favoriteCastId });
     return this.list(ownerId, id);
@@ -212,9 +220,10 @@ export class EpisodesService implements OnModuleInit {
       const identity = dto.favoriteCharacter === undefined ? {} : previous?.favoriteActorId && dto.favoriteCharacter.trim() === previous.favoriteCharacter && (!dto.favoriteCastId || dto.favoriteCastId === previous.favoriteCastId)
         ? { favoriteCastId: previous.favoriteCastId, favoriteActorId: previous.favoriteActorId, favoriteActorName: previous.favoriteActorName, favoriteActorPhoto: previous.favoriteActorPhoto }
         : await voteIdentity(this.connection, item.catalogId, dto.favoriteCharacter.trim(), dto.favoriteCastId, dto.season, dto.episode);
-      try { await this.progress.updateOne(filter, { $setOnInsert: { ...filter, watchedAt: new Date(), watchOrigin: 'individual' } }, { upsert: true }); }
+      try { await this.progress.updateOne(filter, { $setOnInsert: { ...filter, watchedAt: dto.watchedDateUnknown ? null : new Date(), recordedAt: new Date(), watchedDateUnknown: dto.watchedDateUnknown || false, watchOrigin: 'individual' } }, { upsert: true }); }
       catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
-      const review = { ...identity, ...(dto.stars !== undefined ? { stars: dto.stars } : {}), ...(dto.feeling !== undefined ? { feeling: dto.feeling } : {}), ...(dto.favoriteCharacter !== undefined ? { favoriteCharacter: dto.favoriteCharacter.trim() } : {}) };
+      // Reavaliar sem escolha explícita preserva a data; desconhecida nunca recebe hoje por fallback.
+      const review = { ...identity, ...(dto.watchedDateUnknown !== undefined ? { watchedDateUnknown: dto.watchedDateUnknown, watchedAt: dto.watchedDateUnknown ? null : previous?.watchedAt || new Date() } : {}), ...(dto.stars !== undefined ? { stars: dto.stars } : {}), ...(dto.feeling !== undefined ? { feeling: dto.feeling } : {}), ...(dto.favoriteCharacter !== undefined ? { favoriteCharacter: dto.favoriteCharacter.trim() } : {}) };
       if (Object.keys(review).length) await this.progress.updateOne(filter, { $set: review }, { runValidators: true });
       await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active' } });
     } else {
@@ -235,12 +244,13 @@ class EpisodesController {
     return (await this.auth.me(typeof raw === 'string' ? raw : undefined)).id;
   }
   @Post('unwatch-many') async unwatchMany(@Req() request: Request, @Param('id') id: string, @Body() dto: BulkUnwatchDto) { return this.service.unwatchMany(await this.owner(request), id, dto); }
+  @ApiOperation({ summary: 'Marcar episódios em lote', description: 'watchedDateUnknown=true registra novos episódios sem data de consumo; registros existentes preservam sua data. Contam para acompanhamento, tempo e XP, sem metas diárias.' })
   @Post('watch-many') async watchMany(@Req() request: Request, @Param('id') id: string, @Body() dto: BulkWatchDto) { return this.service.watchMany(await this.owner(request), id, dto); }
   @Post('complete') async complete(@Req() request: Request, @Param('id') id: string) { return this.service.complete(await this.owner(request), id); }
   @Get() async list(@Req() request: Request, @Param('id') id: string) { return this.service.list(await this.owner(request), id); }
   @Post('import') async import(@Req() request: Request, @Param('id') id: string, @Body() dto: ImportDto) { return this.service.import(await this.owner(request), id, dto); }
   @Patch()
-  @ApiOperation({ summary: 'Marcar/desmarcar ou avaliar um episódio', description: 'Uma marcação nova recebe origem individual e data do servidor, podendo contar para maratonas. Reavaliar/remarcar um episódio existente preserva sua origem/data; registros legados ou feitos em lote não viram marcações individuais.' })
+  @ApiOperation({ summary: 'Marcar/desmarcar ou avaliar um episódio', description: 'Uma marcação nova recebe origem individual. Por padrão usa a data do servidor; watchedDateUnknown=true mantém watchedAt=null e recordedAt separado, sem contar para maratonas. Reavaliar/remarcar um episódio existente preserva sua origem/data; registros legados ou feitos em lote não viram marcações individuais.' })
   async watch(@Req() request: Request, @Param('id') id: string, @Body() dto: WatchDto) { return this.service.watch(await this.owner(request), id, dto); }
 }
 @Module({ imports: [AuthModule, CatalogModule, MongooseModule.forFeature([{ name: Season.name, schema: SeasonSchema }, { name: Progress.name, schema: ProgressSchema }])], providers: [EpisodesService], exports: [EpisodesService], controllers: [EpisodesController] })

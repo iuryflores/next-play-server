@@ -1,3 +1,4 @@
+import { ChallengesModule } from './challenges/challenges.module';
 import { ApiTags } from '@nestjs/swagger';
 import { RottenTomatoesModule } from './rotten-tomatoes/rotten-tomatoes.module';
 import { FriendsModule } from './friends/friends.module';
@@ -12,6 +13,7 @@ import { getConfig } from './config';
 import { AchievementsModule } from './achievements/achievements.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ProgressionModule } from './progression/progression.module';
+import { GameSessionsModule } from './game-sessions/game-sessions.module';
 
 @ApiTags('health')
 @Controller('health')
@@ -31,7 +33,7 @@ class HealthController {
       connection.on('error', (error: Error & { code?: string | number }) => console.error(`[MongoDB] Erro de conexão: ${error.name}${error.code ? ` (${error.code})` : ''}`));
       return connection;
     },
-  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule],
+  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule, GameSessionsModule, ChallengesModule],
   controllers: [HealthController],
 })
 export class AppModule {}

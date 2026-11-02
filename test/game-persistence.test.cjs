@@ -14,7 +14,8 @@ test('game service saves platform, preserves it on quick updates and allows clea
     findOneAndUpdate: (_filter, update) => ({ exec: async () => (saved = { ...saved, ...update.$set }) }),
   };
   const titles = { findOne: () => ({ exec: async () => null }), updateOne: async () => {} };
-  const catalog = { detail: async () => ({ title: 'Game', kind: 'game', catalogId: key, genres: ['Fighting'] }) };
+  // O jogo deste cenário não é uma dependência de outro título.
+  const catalog = { cachedGameParent: async id => { assert.equal(id, key); return undefined; }, detail: async () => ({ title: 'Game', kind: 'game', catalogId: key, genres: ['Fighting'] }) };
   const service = new LibraryService(items, catalog, titles, {}, {}, {});
   service.remember = async () => key;
   const dto = { title: 'Game', kind: 'game', status: 'planned', catalogId: key, platform: ' PS1 ', genres: ['Luta', 'Aventura'], playtimeMinutes: 123 };

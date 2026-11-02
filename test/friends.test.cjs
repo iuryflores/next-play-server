@@ -67,7 +67,7 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
     {ownerId:new Types.ObjectId(c.id),kind:'book',status:'completed',title:'Livro de outra conta'},
   ]);
   const beforeXp=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
-  assert.equal(beforeXp.ranking.find(row=>row.id===b.id).xp,0,'consultar ranking não concede XP');
+  assert.ok(beforeXp.ranking.find(row=>row.id===b.id).xp>0,'ranking reconhece o histórico antes de o usuário abrir o perfil');
   const xpResponse=await call('/progression/sync','POST',{},b.cookie);
   assert.equal(xpResponse.status,200);
   const xpState=await xpResponse.json();
@@ -102,5 +102,24 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   assert.equal(outgoing.ranking.find(row=>row.id===c.id).connection.status,'pending');
   const incoming=await (await call('/friends?scope=all','GET',undefined,c.cookie)).json();
   assert.equal(incoming.ranking.find(row=>row.id===a.id).connection.incoming,true);
+  // Regressão: 73 jogos apareciam na coluna, mas o XP ficava zerado sem login recente do dono.
+  const lucas=await register('lucas-xp@example.test');
+  const lucasId=new Types.ObjectId(lucas.id);
+  await db.collection('library_items').insertMany(Array.from({length:73},(_,index)=>({ownerId:lucasId,kind:'game',status:'completed',title:'Jogo privado de Lucas '+index,catalogKey:'local:lucas-game:'+index,archived:index<10})));
+  assert.equal(await db.collection('user_xp_credits').countDocuments({ownerId:lucasId}),0);
+  await call('/friends','GET',undefined,a.cookie);
+  assert.equal(await db.collection('user_xp_credits').countDocuments({ownerId:lucasId}),0,'escopo amigos não reconhece contas que não participam dele');
+  const histories=await Promise.all([a,b].map(async user=>{
+    const response=await call('/friends?scope=all','GET',undefined,user.cookie);
+    assert.equal(response.status,200); return response.json();
+  }));
+  for(const history of histories) {
+    const row=history.ranking.find(row=>row.id===lucas.id);
+    assert.equal(row.games,73); assert.equal(row.xp,3650); assert.equal(row.level,14);
+    assert.ok(!JSON.stringify(history).includes('Jogo privado de Lucas'));
+  }
+  const persisted=await (await call('/progression','GET',undefined,lucas.cookie)).json();
+  assert.equal(persisted.totalXp,3650,'reconhecimento fica salvo sem POST sync do dono');
+  assert.equal(await db.collection('user_xp_credits').countDocuments({ownerId:lucasId}),73,'consultas concorrentes não duplicam XP');
 });
 

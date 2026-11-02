@@ -40,22 +40,30 @@ export class ProgressionService implements OnModuleInit {
   private credits() { return this.connection.collection<Credit>('user_xp_credits'); }
   async onModuleInit() { await this.credits().createIndex({ ownerId: 1, updatedAt: -1, _id: 1 }); }
   async sync(owner: string) {
+    await this.recognize(owner);
+    return this.state(owner);
+  }
+  async recognize(owner: string) {
     const ownerId = new Types.ObjectId(owner);
     const items = await this.connection.collection<XpItem & { ownerId: Types.ObjectId }>('library_items').find({ ownerId }, { projection: { kind: 1, status: 1, title: 1, catalogId: 1, catalogKey: 1, year: 1, stars: 1, feeling: 1, playtimeMinutes: 1 } }).toArray();
     const seriesIds = items.filter(item => item.kind === 'series').map(item => item._id);
     const [episodes, awards] = await Promise.all([
-      seriesIds.length ? this.connection.collection<XpEpisode>('episode_progress').find({ itemId: { $in: seriesIds }, season: { $gt: 0 } }, { projection: { itemId: 1, season: 1, episode: 1, watchedAt: 1, stars: 1, feeling: 1 } }).toArray() : [],
+      seriesIds.length ? this.connection.collection<XpEpisode>('episode_progress').find({ itemId: { $in: seriesIds }, season: { $gt: 0 } }, { projection: { itemId: 1, season: 1, episode: 1, watchedAt: 1, watchedDateUnknown: 1, stars: 1, feeling: 1 } }).toArray() : [],
       this.connection.collection('achievement_awards').find({ ownerId }, { projection: { key: 1 } }).toArray(),
     ]);
+    const existing = await this.credits().find({ ownerId }, { projection: { units: 1 } }).toArray();
+    const unitsById = new Map(existing.map(row => [row._id, row.units]));
+    const creditId = (key: string) => `${owner}:${createHash('sha256').update(key).digest('hex')}`;
+    // Leituras frequentes do ranking não regravam todo o histórico já reconhecido.
     const candidates = xpCandidates(items, episodes, awards.flatMap(row => {
       const definition = achievements.find(item => item.id === row.key);
       return definition ? [{ key: row.key, name: definition.name }] : [];
-    }));
+    })).filter(item => item.units > (unitsById.get(creditId(item.key)) || 0));
     // O identificador deriva da obra/episódio, não do registro removível da biblioteca.
     // O máximo persistido impede ganhar XP ao editar, desmarcar ou recadastrar a mesma obra.
     for (let offset = 0; offset < candidates.length; offset += 500) {
       const operations = candidates.slice(offset, offset + 500).map(item => ({ updateOne: {
-        filter: { _id: `${owner}:${createHash('sha256').update(item.key).digest('hex')}`, ownerId },
+        filter: { _id: creditId(item.key), ownerId },
         update: [{ $set: {
           ownerId: { $literal: ownerId }, kind: { $literal: item.kind },
           label: { $ifNull: ['$label', { $literal: item.label }] },
@@ -73,7 +81,6 @@ export class ProgressionService implements OnModuleInit {
         await this.credits().bulkWrite(operations, { ordered: false });
       }
     }
-    return this.state(owner);
   }
   async state(owner: string) {
     const ownerId = new Types.ObjectId(owner);
@@ -104,5 +111,5 @@ class ProgressionController {
     return this.service.sync((await this.auth.forRequest(request)).id);
   }
 }
-@Module({ imports: [AuthModule], providers: [ProgressionService], controllers: [ProgressionController] })
+@Module({ imports: [AuthModule], providers: [ProgressionService], controllers: [ProgressionController], exports: [ProgressionService] })
 export class ProgressionModule {}

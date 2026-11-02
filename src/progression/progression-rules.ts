@@ -18,7 +18,7 @@ export function levelFromXp(xp: number) {
 }
 
 export type XpItem = { _id: { toString(): string }; kind: string; status: string; title: string; catalogId?: string; catalogKey?: string; year?: string; stars?: number; feeling?: string; playtimeMinutes?: number };
-export type XpEpisode = { itemId: { toString(): string }; season: number; episode: number; watchedAt?: Date; stars?: number; feeling?: string };
+export type XpEpisode = { itemId: { toString(): string }; season: number; episode: number; watchedAt?: Date; watchedDateUnknown?: boolean; stars?: number; feeling?: string };
 export type Candidate = { key: string; kind: XpKind; label: string; units: number };
 export function xpCandidates(items: XpItem[], episodes: XpEpisode[], awards: { key: string; name: string }[]): Candidate[] {
   const result = new Map<string, Candidate>();
@@ -41,7 +41,7 @@ export function xpCandidates(items: XpItem[], episodes: XpEpisode[], awards: { k
   const series = new Map(items.filter(item => item.kind === 'series').map(item => [item._id.toString(), item]));
   for (const row of episodes) {
     const item = series.get(row.itemId.toString());
-    if (!item || !row.watchedAt || row.season <= 0 || row.episode <= 0) continue;
+    if (!item || (!row.watchedAt && !row.watchedDateUnknown) || row.season <= 0 || row.episode <= 0) continue;
     const key = `${identity(item)}:${row.season}:${row.episode}`;
     const label = `${item.title} — T${row.season} E${row.episode}`;
     add('episode', key, label);

@@ -1,5 +1,6 @@
 import { saveNotification } from '../notifications/notification-store';
 import { levelFromXp } from '../progression/progression-rules';
+import { ProgressionModule, ProgressionService } from '../progression/progression.module';
 import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation, ApiOkResponse } from '@nestjs/swagger';
 import { Body, Controller, Delete, Get, Post, HttpCode, Injectable, Module, Param, Query, Req, ForbiddenException, BadRequestException, NotFoundException, ConflictException, OnModuleInit } from '@nestjs/common';
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -32,7 +33,7 @@ class FriendProfileDto { @ApiProperty({ type: String, required: true, minLength:
   @IsString() @MinLength(1) @MaxLength(40) @Matches(/\S/) name!: string; }
 @Injectable()
 class FriendsService implements OnModuleInit {
-  constructor(@InjectModel(Friendship.name) private readonly friends: Model<Friendship>, @InjectConnection() private readonly connection: Connection, private readonly library: LibraryService, private readonly avatars: AvatarStorage) {}
+  constructor(@InjectModel(Friendship.name) private readonly friends: Model<Friendship>, @InjectConnection() private readonly connection: Connection, private readonly library: LibraryService, private readonly avatars: AvatarStorage, private readonly progression: ProgressionService) {}
   async onModuleInit() { await this.friends.init(); }
   private member(id: string) { return { $or: [{ sender: id }, { receiver: id }] }; }
   async profile(id: string, name: string) { await this.connection.collection('users').updateOne({ _id: new Types.ObjectId(id) }, { $set: { displayName: name.trim() } }); }
@@ -73,6 +74,11 @@ class FriendsService implements OnModuleInit {
     };
     const name = (userId: string) => users.find(user => user._id.toString() === userId)?.displayName || `Player ${userId.slice(-6)}`;
     const rankingIds = scope === 'all' ? users.map(user => user._id.toString()) : [id, ...links.filter(link => link.status === 'accepted').map(link => link.sender === id ? link.receiver : link.sender)];
+    // Reconhece o histórico dos participantes sem depender de eles abrirem o perfil.
+    // Limita a concorrência e não consulta nem publica detalhes privados dos créditos.
+    for (let offset = 0; offset < rankingIds.length; offset += 4) {
+      await Promise.all(rankingIds.slice(offset, offset + 4).map(userId => this.progression.recognize(userId)));
+    }
     // Só os totais são públicos. Consultas em lote evitam buscar o histórico privado de XP por usuário.
     const ownerIds = rankingIds.map(value => new Types.ObjectId(value));
     const [completed, credits] = await Promise.all([
@@ -118,7 +124,7 @@ class FriendsController {
     return (await this.auth.me(typeof token === 'string' ? token : undefined)).id;
   }
   @Get()
-  @ApiOperation({ summary: 'Listar amigos ou todos os usuários e seu ranking', description: 'Requer sessão. Retorna code, name, connections (amizades e pedidos) e ranking do escopo solicitado, incluindo posição, movimento, nome público, avatar (URL temporária ou foto legada; vazio se indisponível), connection (id/status/incoming ou null), tempo, episódios, books (livros lidos distintos), games (jogos concluídos distintos), xp (XP total já reconhecido e persistido), level (nível geral correspondente) e achievement (título escolhido e progresso ou null). Não retorna emails, coleção, avaliações ou evidências de conquistas. Contagens incluem arquivados, excluem planejados/em andamento e não expõem nomes de obras. Contas ainda não sincronizadas têm zero XP reconhecido. A consulta não concede XP. A ordenação permanece pelo tempo em séries; rankings dos dois escopos mantêm históricos de movimento independentes.' })
+  @ApiOperation({ summary: 'Listar amigos ou todos os usuários e seu ranking', description: 'Requer sessão. Retorna code, name, connections (amizades e pedidos) e ranking do escopo solicitado, incluindo posição, movimento, nome público, avatar (URL temporária ou foto legada; vazio se indisponível), connection (id/status/incoming ou null), tempo, episódios, books (livros lidos distintos), games (jogos concluídos distintos), xp (XP total já reconhecido e persistido), level (nível geral correspondente) e achievement (título escolhido e progresso ou null). Não retorna emails, coleção, avaliações ou evidências de conquistas. Contagens incluem arquivados, excluem planejados/em andamento e não expõem nomes de obras. Antes de calcular os totais, a consulta reconhece atividades elegíveis já existentes dos participantes, mesmo sem login recente deles. O reconhecimento é idempotente e não aceita pontos do cliente; apenas créditos novos ou horas adicionais são gravados. A ordenação permanece pelo tempo em séries; rankings dos dois escopos mantêm históricos de movimento independentes.' })
   @ApiOkResponse({ description: 'Perfil da sessão, conexões e ranking do escopo friends (padrão) ou all.' })
   async list(@Req() request: Request, @Query() query: FriendsQueryDto) { return this.friends.list(await this.owner(request), request.get('X-Ranking-Visit'), query.scope); }
   @Post('profile') @HttpCode(204) async profile(@Req() request: Request, @Body() dto: FriendProfileDto) { await this.friends.profile(await this.owner(request), dto.name); }
@@ -126,5 +132,5 @@ class FriendsController {
   @Post(':id/accept') @HttpCode(204) async accept(@Req() request: Request, @Param('id') id: string) { await this.friends.accept(await this.owner(request), id); }
   @Delete(':id') @HttpCode(204) async remove(@Req() request: Request, @Param('id') id: string) { await this.friends.remove(await this.owner(request), id); }
 }
-@Module({ imports: [AuthModule, LibraryModule, MongooseModule.forFeature([{ name: Friendship.name, schema: FriendshipSchema }])], controllers: [FriendsController], providers: [FriendsService] })
+@Module({ imports: [AuthModule, LibraryModule, ProgressionModule, MongooseModule.forFeature([{ name: Friendship.name, schema: FriendshipSchema }])], controllers: [FriendsController], providers: [FriendsService] })
 export class FriendsModule {}

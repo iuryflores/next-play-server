@@ -11,15 +11,94 @@ import { getConfig } from '../config';
 
 export type CatalogKind = 'movie' | 'series' | 'game';
 export type ProductionCompany = { id: number; name: string; logoUrl?: string | null };
-export interface CatalogTitle { platforms?: string[]; productionCompanies?: ProductionCompany[]; catalogId: string; kind: CatalogKind; title: string; originalTitle?: string; year: string; runtime?: number | null; releaseDate?: string; unreleased?: boolean; coverUrl: string; overview: string; sourceUrl: string; genres?: string[]; }
+export interface CatalogTitle { parentGameCatalogId?: string; platforms?: string[]; productionCompanies?: ProductionCompany[]; catalogId: string; kind: CatalogKind; title: string; originalTitle?: string; year: string; runtime?: number | null; releaseDate?: string; unreleased?: boolean; coverUrl: string; overview: string; sourceUrl: string; genres?: string[]; }
 type TmdbItem = { production_companies?: { id: number; name: string; logo_path?: string | null }[]; runtime?: number; status?: string; id: number; title?: string; name?: string; original_title?: string; original_name?: string; poster_path?: string; overview?: string; release_date?: string; first_air_date?: string; adult?: boolean; genres?: { id: number; name: string }[] };
-type IgdbItem = { platforms?: { name: string; abbreviation?: string }[]; game_localizations?: { name?: string; region?: { identifier?: string } }[]; id: number; name: string; summary?: string; first_release_date?: number; cover?: { image_id: string }; slug?: string; genres?: { id: number; name: string }[] };
+type IgdbItem = { parent_game?: number; platforms?: { name: string; abbreviation?: string }[]; game_localizations?: { name?: string; region?: { identifier?: string } }[]; id: number; name: string; summary?: string; first_release_date?: number; cover?: { image_id: string }; slug?: string; genres?: { id: number; name: string }[] };
 class CatalogDetailsQuery {
   @ApiProperty({ example: 'tmdb:movie:11', pattern: '^(tmdb:(movie|series)|igdb:game):[1-9][0-9]{0,14}$', description: 'Referência pública de filme, série ou jogo; não aceita URLs nem IDs de itens privados.' })
   @IsString() @Matches(/^(tmdb:(movie|series)|igdb:game):[1-9]\d{0,14}$/) catalogId!: string;
 }
+export class GameEstimateDto {
+  @ApiProperty({ type: Boolean, description: 'Vínculo IGDB válido. Sem vínculo, os tempos ficam nulos.' }) supported!: boolean;
+  @ApiProperty({ enum: ['igdb'] }) source!: 'igdb';
+  @ApiProperty({ type: Number, nullable: true, description: 'História principal em minutos; null quando não informado.' }) mainMinutes!: number | null;
+  @ApiProperty({ type: Number, nullable: true, description: 'História com extras em minutos; null quando não informado.' }) extrasMinutes!: number | null;
+  @ApiProperty({ type: Number, nullable: true, description: '100% completo em minutos; null quando não informado.' }) completionistMinutes!: number | null;
+  @ApiProperty({ type: Number, nullable: true, description: 'Quantidade de contribuições informada pela IGDB.' }) sampleCount!: number | null;
+}
 @Injectable()
 export class CatalogService {
+  async cachedGameParent(catalogId: string) {
+    if (!/^igdb:game:[1-9]\d{0,14}$/.test(catalogId)) return undefined;
+    const id = Number(catalogId.split(':')[2]);
+    const row = await this.connection.collection<{ _id: string; refs: { id: number; contentType: string }[] }>('catalog_game_addons').findOne({ refs: { $elemMatch: { id, contentType: { $in: ['dlc', 'expansion'] } } } });
+    return row && row._id !== catalogId ? row._id : undefined;
+  }
+  async gameAddons(catalogId: string | undefined, language = 'pt-BR', page = 1) {
+    type AddonType = 'dlc' | 'expansion' | 'standalone-expansion';
+    type Reference = { id: number; contentType: AddonType };
+    type Result = { supported: boolean; results: (CatalogTitle & { contentType: AddonType })[]; nextPage: number | null; total: number };
+    if (!Number.isInteger(page) || page < 1 || page > 500) throw new BadRequestException('Página inválida.');
+    const empty: Result = { supported: false, results: [], nextPage: null, total: 0 };
+    if (!catalogId || !/^igdb:game:[1-9]\d{0,14}$/.test(catalogId)) return empty;
+    const pages = this.connection.collection<{ _id: string; value: Result; expires: Date }>('catalog_game_addon_pages');
+    const pageKey = `${catalogId}:${language}:${page}`;
+    const cachedPage = await pages.findOne({ _id: pageKey });
+    if (cachedPage && cachedPage.expires > new Date()) return cachedPage.value;
+    const directory = this.connection.collection<{ _id: string; refs: Reference[]; expires: Date }>('catalog_game_addons');
+    const saved = await directory.findOne({ _id: catalogId });
+    let refs = saved?.expires && saved.expires > new Date() ? saved.refs : null;
+    if (!refs) {
+      const id = Number(catalogId.split(':')[2]);
+      const rows = await this.igdb<{ id: number; dlcs?: number[]; expansions?: number[]; standalone_expansions?: number[] }[]>(`fields dlcs,expansions,standalone_expansions; where id = ${id}; limit 1;`);
+      if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.id !== id) throw new BadGatewayException('Não foi possível consultar os conteúdos adicionais na IGDB.');
+      const groups = [['dlcs', 'dlc'], ['expansions', 'expansion'], ['standalone_expansions', 'standalone-expansion']] as const;
+      const unique = new Map<number, Reference>();
+      for (const [field, contentType] of groups) {
+        const ids = rows[0][field];
+        if (ids !== undefined && (!Array.isArray(ids) || ids.some(value => !Number.isSafeInteger(value) || value < 1))) throw new BadGatewayException('Resposta inválida dos conteúdos adicionais da IGDB.');
+        // Só vínculos explícitos: não inferimos DLC pelo nome nem misturamos remakes e jogos semelhantes.
+        for (const child of ids || []) if (child !== id && (!unique.has(child) || contentType === 'standalone-expansion')) unique.set(child, { id: child, contentType });
+      }
+      refs = [...unique.values()].sort((a, b) => a.id - b.id);
+      if (refs.length > 10000) throw new BadGatewayException('A lista de conteúdos adicionais excede o limite suportado.');
+      await directory.updateOne({ _id: catalogId }, { $set: { refs, expires: new Date(Date.now() + 86400000) } }, { upsert: true });
+    }
+    const selected = refs.slice((page - 1) * 20, page * 20);
+    let results: Result['results'] = [];
+    if (selected.length) {
+      const rows = await this.igdb(`fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation,game_localizations.name,game_localizations.region.identifier; where id = (${selected.map(ref => ref.id).join(',')}); limit 20;`);
+      if (!Array.isArray(rows) || rows.some(row => !row || !selected.some(ref => ref.id === row.id) || typeof row.name !== 'string' || !row.name.trim())) throw new BadGatewayException('Resposta inválida dos conteúdos adicionais da IGDB.');
+      results = selected.flatMap(ref => { const row = rows.find(row => row.id === ref.id); return row ? [{ ...this.game(row, language), contentType: ref.contentType }] : []; });
+    }
+    // O cursor avança pelos vínculos, mesmo se algum título tiver sido removido do catálogo.
+    const value: Result = { supported: true, results, nextPage: page * 20 < refs.length ? page + 1 : null, total: refs.length };
+    await pages.updateOne({ _id: pageKey }, { $set: { value, expires: new Date(Date.now() + 86400000) } }, { upsert: true });
+    return value;
+  }
+  private estimatePending = new Map<string, Promise<GameEstimateDto>>();
+  async gameEstimate(catalogId?: string): Promise<GameEstimateDto> {
+    const empty: GameEstimateDto = { supported: false, source: 'igdb', mainMinutes: null, extrasMinutes: null, completionistMinutes: null, sampleCount: null };
+    if (!catalogId || !/^igdb:game:[1-9]\d{0,14}$/.test(catalogId)) return empty;
+    const pending = this.estimatePending.get(catalogId); if (pending) return pending;
+    const work = (async () => {
+      const collection = this.connection.collection<{ _id: string; value: GameEstimateDto; expires: Date }>('catalog_game_estimates');
+      const cached = await collection.findOne({ _id: catalogId });
+      if (cached && cached.expires > new Date()) return cached.value;
+      const gameId = Number(catalogId.split(':')[2]);
+      const rows = await this.igdb<{ game_id: number; hastily?: number; normally?: number; completely?: number; count?: number }[]>(`fields game_id,hastily,normally,completely,count; where game_id = ${gameId}; limit 1;`, 'game_time_to_beats');
+      // Falha de contrato não significa ausência de estimativa e não deve virar cache negativo.
+      if (!Array.isArray(rows) || rows.some(row => !row || row.game_id !== gameId)) throw new BadGatewayException('Resposta inválida da estimativa IGDB.');
+      const row = rows[0];
+      const minutes = (seconds: unknown) => typeof seconds === 'number' && Number.isSafeInteger(seconds) && seconds > 0 ? Math.ceil(seconds / 60) : null;
+      const value: GameEstimateDto = { ...empty, supported: true, mainMinutes: minutes(row?.hastily), extrasMinutes: minutes(row?.normally), completionistMinutes: minutes(row?.completely), sampleCount: Number.isSafeInteger(row?.count) && row.count! > 0 ? row.count! : null };
+      const hasEstimate = value.mainMinutes !== null || value.extrasMinutes !== null || value.completionistMinutes !== null;
+      // Compartilhado por jogo, sem horas privadas: sucessos duram sete dias; ausências, um dia.
+      await collection.updateOne({ _id: catalogId }, { $set: { value, expires: new Date(Date.now() + (hasEstimate ? 7 : 1) * 86400000) } }, { upsert: true });
+      return value;
+    })().finally(() => this.estimatePending.delete(catalogId));
+    this.estimatePending.set(catalogId, work); return work;
+  }
   async directors(catalogId: string | undefined) {
     type Director = { id: number; name: string };
     if (!catalogId || !/^tmdb:movie:[1-9]\d{0,14}$/.test(catalogId)) return { directors: [] as Director[], supported: false };
@@ -348,9 +427,18 @@ export class CatalogService {
       if (data.adult || !Number.isSafeInteger(data.id)) throw new BadRequestException('Título indisponível.');
       item = this.movie(data, kind);
     } else {
-      const data = await this.igdb(`fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation,game_localizations.name,game_localizations.region.identifier; where id = ${match[6]}; limit 1;`);
+      const data = await this.igdb(`fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation,game_localizations.name,game_localizations.region.identifier,parent_game; where id = ${match[6]}; limit 1;`);
       if (!Array.isArray(data) || !data[0] || typeof data[0].name !== 'string') throw new BadRequestException('Jogo não encontrado.');
       item = this.game(data[0], language);
+      const parent = data[0].parent_game;
+      if (Number.isSafeInteger(parent) && parent! > 0 && parent !== data[0].id) {
+        const parentId = `igdb:game:${parent}`;
+        await this.gameAddons(parentId, language);
+        const directory = await this.connection.collection<{ _id: string; refs: { id: number; contentType: string }[] }>('catalog_game_addons').findOne({ _id: parentId });
+        // Expansões independentes não herdam o card: o vínculo precisa ser dependente e confirmado.
+        const ref = directory?.refs.find(ref => ref.id === data[0].id);
+        if (ref && ref.contentType !== 'standalone-expansion') item.parentGameCatalogId = parentId;
+      }
     }
     if (item.catalogId !== catalogId) throw new BadGatewayException('O catálogo retornou uma referência diferente da solicitada.');
     this.remember(detailKey, [item]); return item;
