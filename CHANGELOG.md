@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.6](https://github.com/iuryflores/next-play-server/compare/v0.5.5...v0.5.6) (2026-11-02)
+
+
+### Bug Fixes
+
+* consulta diagnóstico do agente SSM além do shell ([3301e41](https://github.com/iuryflores/next-play-server/commit/3301e41a7af01a39c755765ba05b045e36949891))
+* mantém diagnóstico adicional SSM como consulta opcional ([0c9cdf1](https://github.com/iuryflores/next-play-server/commit/0c9cdf14996914853140f6a455543827d80a2692))
+
 ## [0.5.5](https://github.com/iuryflores/next-play-server/compare/v0.5.4...v0.5.5) (2026-11-02)
 
 
