@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.4](https://github.com/iuryflores/next-play-server/compare/v0.5.3...v0.5.4) (2026-11-02)
+
+
+### Bug Fixes
+
+* explica recusas de ativação antes do rollback ([c3e7b7a](https://github.com/iuryflores/next-play-server/commit/c3e7b7a4e1d41f7593ddd356a1c055f2fcdb8462))
+* preserva linhas seguras no diagnóstico de deploy ([e28d77f](https://github.com/iuryflores/next-play-server/commit/e28d77f4cb4fb69f7a5bb0c77795d95dc69576b7))
+
 ## [0.5.3](https://github.com/iuryflores/next-play-server/compare/v0.5.2...v0.5.3) (2026-11-02)
 
 
