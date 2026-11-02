@@ -27,6 +27,11 @@ test('Swagger serves UI and schemas matching cookie authentication and optional 
   assert.equal(response.status, 200);
   const spec = await response.json();
   assert.ok(spec.paths['/api/library'].get);
+  const explore = spec.paths['/api/library/explore'].get;
+  assert.ok(explore.parameters.find(p => p.name === 'kind').schema.enum.includes('book'));
+  assert.match(explore.description, /Google Books/);
+  assert.match(explore.parameters.find(p => p.name === 'page').description, /50/);
+  assert.match(explore.responses['200'].description, /totalPages/);
   assert.deepEqual(spec.paths['/api/library'].get.security, [{ session: [] }]);
   assert.equal(spec.components.securitySchemes.session.in, 'cookie');
   assert.equal(spec.components.securitySchemes.session.name, 'nextplay_session');

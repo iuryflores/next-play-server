@@ -1,4 +1,4 @@
-import { ApiProperty, ApiTags, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from '../library/vote-identity';
 import { Body, BadRequestException, Controller, ForbiddenException, Get, Injectable, Module, NotFoundException, OnModuleInit, Param, Patch, Post, Req } from '@nestjs/common';
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -27,6 +27,8 @@ class Progress {
   @Prop({ required: true }) season!: number;
   @Prop({ required: true }) episode!: number;
   @Prop({ required: true }) watchedAt!: Date;
+  // Ausente no legado; somente marcações individuais novas podem conceder maratonas.
+  @Prop({ enum: ['individual', 'bulk'] }) watchOrigin?: string;
   @Prop({ default: 0, min: 0, max: 5 }) stars!: number;
   @Prop({ default: '' }) feeling!: string;
   @Prop({ default: '', maxlength: 100 }) favoriteCharacter!: string;
@@ -93,7 +95,7 @@ export class EpisodesService implements OnModuleInit {
     return loaded.flatMap(season => season.episodes.filter(episode => !episode.airDate || episode.airDate <= today).map(episode => ({ season: season.number, episode: episode.number })));
   }
   async markComplete(itemId: Types.ObjectId, episodes: { season: number; episode: number }[], watchedAt: Date) {
-    if (episodes.length) await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId, ...episode }, update: { $setOnInsert: { itemId, ...episode, watchedAt } }, upsert: true } })));
+    if (episodes.length) await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId, ...episode }, update: { $setOnInsert: { itemId, ...episode, watchedAt, watchOrigin: 'bulk' } }, upsert: true } })));
     await this.connection.collection('library_items').updateOne({ _id: itemId }, { $set: { episodesCompletedAt: new Date() } });
   }
   async complete(ownerId: string, id: string) {
@@ -183,7 +185,7 @@ export class EpisodesService implements OnModuleInit {
     if (!episodes.length) throw new BadRequestException('Nenhum episódio já lançado nesta seleção.');
     const now = new Date();
     const identity = dto.scope === 'season' && dto.favoriteCharacter?.trim() ? await voteIdentity(this.connection, item.catalogId, dto.favoriteCharacter.trim(), dto.favoriteCastId) : {};
-    await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId: item._id, ...episode }, update: { $setOnInsert: { itemId: item._id, ...episode, watchedAt: now }, ...(dto.scope === 'season' && dto.favoriteCharacter?.trim() ? { $set: { favoriteCharacter: dto.favoriteCharacter.trim(), ...identity } } : {}) }, upsert: true } })));
+    await this.progress.bulkWrite(episodes.map(episode => ({ updateOne: { filter: { itemId: item._id, ...episode }, update: { $setOnInsert: { itemId: item._id, ...episode, watchedAt: now, watchOrigin: 'bulk' }, ...(dto.scope === 'season' && dto.favoriteCharacter?.trim() ? { $set: { favoriteCharacter: dto.favoriteCharacter.trim(), ...identity } } : {}) }, upsert: true } })));
     if (dto.scope === 'series') await this.connection.collection('library_items').updateOne({ _id: item._id }, { $set: { status: 'completed', completedOn: item.completedOn || today, completedAt: item.completedAt || now, episodesCompletedAt: now } });
     else await this.connection.collection('library_items').updateOne({ _id: item._id, status: 'planned' }, { $set: { status: 'active' } });
     if (dto.scope === 'through') return this.watch(ownerId, id, { season: dto.season!, episode: dto.episode!, watched: true, stars: dto.stars, feeling: dto.feeling, favoriteCharacter: dto.favoriteCharacter, favoriteCastId: dto.favoriteCastId });
@@ -210,7 +212,7 @@ export class EpisodesService implements OnModuleInit {
       const identity = dto.favoriteCharacter === undefined ? {} : previous?.favoriteActorId && dto.favoriteCharacter.trim() === previous.favoriteCharacter && (!dto.favoriteCastId || dto.favoriteCastId === previous.favoriteCastId)
         ? { favoriteCastId: previous.favoriteCastId, favoriteActorId: previous.favoriteActorId, favoriteActorName: previous.favoriteActorName, favoriteActorPhoto: previous.favoriteActorPhoto }
         : await voteIdentity(this.connection, item.catalogId, dto.favoriteCharacter.trim(), dto.favoriteCastId, dto.season, dto.episode);
-      try { await this.progress.updateOne(filter, { $setOnInsert: { ...filter, watchedAt: new Date() } }, { upsert: true }); }
+      try { await this.progress.updateOne(filter, { $setOnInsert: { ...filter, watchedAt: new Date(), watchOrigin: 'individual' } }, { upsert: true }); }
       catch (error) { if ((error as { code?: number }).code !== 11000) throw error; }
       const review = { ...identity, ...(dto.stars !== undefined ? { stars: dto.stars } : {}), ...(dto.feeling !== undefined ? { feeling: dto.feeling } : {}), ...(dto.favoriteCharacter !== undefined ? { favoriteCharacter: dto.favoriteCharacter.trim() } : {}) };
       if (Object.keys(review).length) await this.progress.updateOne(filter, { $set: review }, { runValidators: true });
@@ -237,7 +239,9 @@ class EpisodesController {
   @Post('complete') async complete(@Req() request: Request, @Param('id') id: string) { return this.service.complete(await this.owner(request), id); }
   @Get() async list(@Req() request: Request, @Param('id') id: string) { return this.service.list(await this.owner(request), id); }
   @Post('import') async import(@Req() request: Request, @Param('id') id: string, @Body() dto: ImportDto) { return this.service.import(await this.owner(request), id, dto); }
-  @Patch() async watch(@Req() request: Request, @Param('id') id: string, @Body() dto: WatchDto) { return this.service.watch(await this.owner(request), id, dto); }
+  @Patch()
+  @ApiOperation({ summary: 'Marcar/desmarcar ou avaliar um episódio', description: 'Uma marcação nova recebe origem individual e data do servidor, podendo contar para maratonas. Reavaliar/remarcar um episódio existente preserva sua origem/data; registros legados ou feitos em lote não viram marcações individuais.' })
+  async watch(@Req() request: Request, @Param('id') id: string, @Body() dto: WatchDto) { return this.service.watch(await this.owner(request), id, dto); }
 }
 @Module({ imports: [AuthModule, CatalogModule, MongooseModule.forFeature([{ name: Season.name, schema: SeasonSchema }, { name: Progress.name, schema: ProgressSchema }])], providers: [EpisodesService], exports: [EpisodesService], controllers: [EpisodesController] })
 export class EpisodesModule {}

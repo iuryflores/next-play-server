@@ -1,4 +1,4 @@
-import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation } from '@nestjs/swagger';
+import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation, ApiQuery, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
 import { voteIdentity, emptyVoteIdentity } from './vote-identity';
 import { snapshot } from './ranking-snapshot';
 import { compareRankingVisit } from './ranking-visits';
@@ -210,11 +210,25 @@ export class LibraryService implements OnModuleInit {
     return key;
   }
   async explore(ownerId: string, language = 'pt-BR', page = 1, selectedKind?: string) {
-    if (!Number.isInteger(page) || page < 1 || page > 500 || selectedKind && !kinds.includes(selectedKind)) throw new BadRequestException('Página ou categoria inválida.');
+    if (!Number.isInteger(page) || page < 1 || page > (selectedKind === 'book' || !selectedKind ? 50 : 500) || selectedKind && !kinds.includes(selectedKind)) throw new BadRequestException('Página ou categoria inválida.');
     const owned = await this.items.find({ ownerId }).lean().exec();
     const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLocaleLowerCase('pt-BR').replace(/\s+/g, ' ');
-    const sections = [];
-    for (const kind of kinds.filter(kind => !selectedKind || kind === selectedKind)) {
+    // Catálogos independentes são consultados em paralelo para um provedor lento
+    // não somar seu tempo de espera ao de todas as outras seções.
+    const sections = await Promise.all(kinds.filter(kind => !selectedKind || kind === selectedKind).map(async kind => {
+      if (kind === 'book') {
+        // Explorar recomenda leitura, sem usar exemplares possuídos como histórico
+        // de consumo. O serviço preserva a prioridade título > autor > editora.
+        try {
+          this.books.limit(ownerId);
+          const suggestions = await this.books.suggestions(page, ownerId, 'reading', language);
+          return { kind, source: 'googlebooks', personalized: suggestions.personalized === true, genres: [], nextPage: suggestions.nextPage,
+            results: suggestions.results.map(item => ({ ...item, matches: [] as string[] })) };
+        } catch {
+          // A indisponibilidade de um catálogo não derruba as demais categorias.
+          return { kind, source: 'googlebooks', personalized: false, genres: [], nextPage: null, results: [], unavailable: true };
+        }
+      }
       const weights = new Map<string, number>();
       for (const item of owned.filter(item => item.kind === kind)) {
         for (const genre of new Set((item.genres || []).map(normalize).filter(Boolean))) weights.set(genre, (weights.get(genre) || 0) + 1);
@@ -229,17 +243,16 @@ export class LibraryService implements OnModuleInit {
             const matches = (item.genres || []).filter(genre => weights.has(normalize(genre)));
             return { ...item, matches, relevance: matches.reduce((sum, genre) => sum + (weights.get(normalize(genre)) || 0), 0) };
           }).sort((a, b) => b.relevance - a.relevance);
-          sections.push({ kind, nextPage: suggestions.nextPage, source: 'tmdb', personalized: weights.size > 0, genres: ranked.slice(0, 3).map(([genre]) => genre), results });
-        } catch { sections.push({ kind, source: 'tmdb', personalized: weights.size > 0, genres: ranked.slice(0, 3).map(([genre]) => genre), results: [], unavailable: true }); }
-        continue;
+          return { kind, nextPage: suggestions.nextPage, totalPages: suggestions.totalPages, source: 'tmdb', personalized: weights.size > 0, genres: ranked.slice(0, 3).map(([genre]) => genre), results };
+        } catch { return { kind, source: 'tmdb', personalized: weights.size > 0, genres: ranked.slice(0, 3).map(([genre]) => genre), results: [], unavailable: true }; }
       }
       const candidates = await this.titles.find({ kind, key: { $nin: ownedKeys } }).lean().exec();
       const results = candidates.filter(item => !ownedNames.has(normalize(item.title))).map(item => {
         const matches = [...new Map((item.genres || []).filter(genre => weights.has(normalize(genre))).map(genre => [normalize(genre), genre])).values()];
         return { ...this.metadata(item), catalogId: item.key, inCollection: ownedNames.has(normalize(item.title)), matches, score: matches.reduce((sum, genre) => sum + (weights.get(normalize(genre)) || 0), 0) };
       }).filter(item => !weights.size || item.score > 0).sort((a, b) => Number(a.inCollection) - Number(b.inCollection) || b.score - a.score || a.title!.localeCompare(b.title!)).slice((page - 1) * 12, page * 12 + 1).map(({ score, ...item }) => ({ ...item, relevance: score }));
-      sections.push({ kind, nextPage: results.length > 12 && page < 500 ? page + 1 : null, personalized: weights.size > 0, genres: ranked.slice(0, 3).map(([genre]) => genre), results: results.slice(0, 12) });
-    }
+      return { kind, nextPage: results.length > 12 && page < 500 ? page + 1 : null, personalized: weights.size > 0, genres: ranked.slice(0, 3).map(([genre]) => genre), results: results.slice(0, 12) };
+    }));
     return { sections };
   }
   private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { lastWatchedAt: ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), platform: item.kind === 'game' ? item.platform || '' : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
@@ -473,11 +486,10 @@ export class LibraryService implements OnModuleInit {
 @Controller('library')
 class LibraryController {
   constructor(private readonly library: LibraryService, private readonly auth: AuthService, private readonly catalog: CatalogService) {}
-  private async language(request: Request) { const token: unknown = request.cookies?.[getConfig().cookieName]; return (await this.auth.me(typeof token === 'string' ? token : undefined)).language; }
+  private async language(request: Request) { return (await this.auth.forRequest(request)).language; }
   private async owner(request: Request) {
     if (request.method !== 'GET' && request.headers.origin !== getConfig().origin) throw new ForbiddenException('Origem da requisição não permitida.');
-    const token: unknown = request.cookies?.[getConfig().cookieName];
-    return (await this.auth.me(typeof token === 'string' ? token : undefined)).id;
+    return (await this.auth.forRequest(request)).id;
   }
   @Get(':id/community') async community(@Req() request: Request, @Param('id') id: string, @Query('before') before?: string) { return this.library.community(await this.owner(request), id, before); }
   @Get(':id/cast') async cast(@Req() request: Request, @Param('id') id: string, @Query('season') season?: string, @Query('episode') episode?: string) { return this.library.cast(await this.owner(request), id, await this.language(request), season === undefined ? undefined : Number(season), episode === undefined ? undefined : Number(episode)); }
@@ -489,7 +501,15 @@ class LibraryController {
   @Post(':id/production-companies') async movieCompanies(@Req() request: Request, @Param('id') id: string) { return this.library.movieCompanies(await this.owner(request), id); }
   @Post(':id/runtime') async movieRuntime(@Req() request: Request, @Param('id') id: string) { return this.library.movieRuntime(await this.owner(request), id); }
   @Get('stats') async stats(@Req() request: Request) { const owner = await this.owner(request); return this.library.rankingVisit(owner, request.get('X-Ranking-Visit')); }
-  @Get('explore') async explore(@Req() request: Request, @Query('page') page?: string, @Query('kind') kind?: string) { const owner = await this.owner(request); const language = await this.language(request); this.catalog.limit(owner); const result = await this.library.explore(owner, language, page === undefined ? 1 : Number(page), kind); return { sections: await Promise.all(result.sections.map(async section => ({ ...section, results: 'source' in section && section.source === 'tmdb' ? section.results : await Promise.all(section.results.map(item => this.catalog.localize(item, language))) }))) }; }
+  @Get('explore')
+  @ApiOperation({ summary: 'Explorar filmes, séries, jogos e livros', description: 'Filmes/séries consideram gêneros do acompanhamento e a ordem de popularidade do TMDB; a ordem retornada preserva afinidade e popularidade. Livros vêm do Google Books e usam somente o acompanhamento privado de leitura da sessão, priorizando título, autor e editora. Sugestões personalizadas e gerais incluem somente edições no idioma do perfil (pt-BR/en-US/es-ES), independentemente do idioma dos livros salvos. Retorna unavailable=true na seção cujo provedor falhar, preservando as demais categorias; a ordem dos livros já representa a afinidade.' })
+  @ApiQuery({ name: 'kind', required: false, enum: ['movie', 'series', 'game', 'book'], description: 'Sem filtro, retorna as quatro categorias.' })
+  @ApiQuery({ name: 'page', required: false, schema: { type: 'integer', minimum: 1, maximum: 500, default: 1 }, description: 'Máximo 50 para livros ou sem filtro; máximo 500 para as demais categorias. nextPage=null encerra a paginação.' })
+  @ApiOkResponse({ description: 'Seções com kind, source (tmdb/googlebooks quando externo), personalized, genres, results, nextPage e unavailable quando houver falha. TMDB inclui totalPages opcional, entre 0 e 500, para sortear páginas válidas de todo o catálogo filtrado. Livros incluem autores, editora, ano, capa e sourceUrl; não incluem dados privados de leitura.' })
+  @ApiResponse({ status: 400, description: 'Página ou categoria inválida.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de requisições atingido.' })
+  async explore(@Req() request: Request, @Query('page') page?: string, @Query('kind') kind?: string) { const owner = await this.owner(request); const language = await this.language(request); this.catalog.limit(owner); const result = await this.library.explore(owner, language, page === undefined ? 1 : Number(page), kind); return { sections: await Promise.all(result.sections.map(async section => ({ ...section, results: 'source' in section && (section.source === 'tmdb' || section.source === 'googlebooks') ? section.results : await Promise.all(section.results.map(item => this.catalog.localize(item, language))) }))) }; }
   @Get()
   @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Livros não são importados automaticamente da Minha Coleção.' })
   async list(@Req() request: Request) { return { items: await this.catalog.localizeMany(await this.library.list(await this.owner(request)), await this.language(request)) }; }

@@ -12,6 +12,8 @@ import { BookSearchDto, BookSearchResultDto, BookSuggestionsDto, BookTitleDto } 
 type Volume = { id?: string; volumeInfo?: { title?: string; categories?: string[]; authors?: string[]; industryIdentifiers?: { type?: string; identifier?: string }[]; publisher?: string; language?: string; publishedDate?: string; description?: string; imageLinks?: { thumbnail?: string; smallThumbnail?: string } } };
 const volumeId = /^[A-Za-z0-9_-]{1,100}$/;
 const clean = (value: unknown, max = 200) => typeof value === 'string' ? value.replace(/<[^>]*>/g, '').trim().slice(0, max) : '';
+const suggestionLanguage = (locale: string) => locale.startsWith('en') ? 'en' : locale.startsWith('es') ? 'es' : 'pt';
+const editionMatchesLanguage = (volume: Volume, language: string) => typeof volume.volumeInfo?.language === 'string' && volume.volumeInfo.language.split(/[-_]/)[0].toLowerCase() === language;
 
 // Valida o dígito verificador: um ISBN digitado errado não deve selecionar outra edição.
 export function normalizedIsbn(value: string): string {
@@ -120,19 +122,21 @@ export class BooksService {
       return value;
     });
   }
-  private async generalSuggestions(page: number): Promise<BookSearchResultDto> {
-    return this.cached('suggestions:pt:' + page, async () => {
-      // Seleção geral do catálogo em português, compartilhada no cache. Não é
+  private async generalSuggestions(page: number, language: string): Promise<BookSearchResultDto> {
+    return this.cached(`suggestions:${language}:${page}`, async () => {
+      // Seleção geral no idioma da conta, compartilhada somente por idioma. Não é
       // recomendação personalizada nem uma consulta por usuário à sua coleção.
-      const data = await this.request('volumes', { q: 'literatura brasileira', langRestrict: 'pt', printType: 'books', maxResults: '20', startIndex: String((page - 1) * 20), orderBy: 'relevance' });
+      const query = language === 'en' ? 'literature' : language === 'es' ? 'literatura' : 'literatura brasileira';
+      const data = await this.request('volumes', { q: query, langRestrict: language, printType: 'books', maxResults: '20', startIndex: String((page - 1) * 20), orderBy: 'relevance' });
       if (data.kind !== 'books#volumes' || (data.items !== undefined && !Array.isArray(data.items))) throw new BadGatewayException('Resposta inválida do Google Books.');
       const volumes: Volume[] = data.items || [];
-      const results = volumes.filter(v => v?.id && volumeId.test(v.id) && clean(v.volumeInfo?.title) && /^pt(?:-|$)/i.test(v.volumeInfo?.language || '')).map(v => this.title(v));
+      const results = volumes.filter(v => v?.id && volumeId.test(v.id) && clean(v.volumeInfo?.title) && editionMatchesLanguage(v, language)).map(v => this.title(v));
       return { results: [...new Map(results.map(v => [v.catalogId, v])).values()], nextPage: volumes.length === 20 && page < 50 && data.totalItems > page * 20 ? page + 1 : null };
     });
   }
-  async suggestions(page = 1, ownerId?: string, context: 'collection' | 'reading' = 'collection'): Promise<BookSearchResultDto> {
-    if (!ownerId) return { ...await this.generalSuggestions(page), personalized: false };
+  async suggestions(page = 1, ownerId?: string, context: 'collection' | 'reading' = 'collection', locale = 'pt-BR'): Promise<BookSearchResultDto> {
+    const language = suggestionLanguage(locale);
+    if (!ownerId) return { ...await this.generalSuggestions(page, language), personalized: false };
     const scope = { ownerId: new Types.ObjectId(ownerId), kind: 'book' };
     // Intenção de leitura não comprova posse. Cada tela consulta apenas seus próprios registros.
     const collection = this.connection.collection<OwnedBook>(context === 'reading' ? 'library_items' : 'collector_copies');
@@ -145,7 +149,9 @@ export class BooksService {
       await collection.updateMany({ ...scope, catalogId: book.catalogId, bookMetadataVersion: { $ne: 1 } }, { $set: { genres: metadata.genres || [], publisher: metadata.publisher || book.publisher || '', bookMetadataVersion: 1 } });
       for (const copy of owned.filter(copy => copy.catalogId === book.catalogId)) { copy.genres = metadata.genres || []; copy.publisher = metadata.publisher || copy.publisher || ''; }
     }));
-    const profile = bookPreferences(owned);
+    // A preferência do perfil prevalece sobre o idioma dos exemplares já salvos.
+    // Selecionamos edições reais nesse idioma, sem renomear/traduzir outro ISBN.
+    const profile = { ...bookPreferences(owned), language };
     const queryValue = (value: string) => value.replace(/["\\:]/g, ' ').trim().slice(0, 150);
     // Buscamos primeiro candidatos pelo título e autor. A editora só serve como
     // alternativa quando não há obras relacionadas ao título/autoria nos resultados.
@@ -157,12 +163,13 @@ export class BooksService {
     if (queries.length) {
       // O cache contém apenas candidatos públicos por consulta. Filtro de posse e
       // ordenação são recalculados por usuário, sem compartilhar seu perfil privado.
-      const pages = await Promise.allSettled(queries.map(q => this.cached(`related:v2:${profile.language}:${q}:${page}`, async () => {
+      const pages = await Promise.allSettled(queries.map(q => this.cached(`related:v3:${language}:${q}:${page}`, async () => {
         const data = await this.request('volumes', { q, langRestrict: profile.language, printType: 'books', maxResults: '20', startIndex: String((page - 1) * 20), orderBy: 'relevance' }, 8000);
         if (data.kind !== 'books#volumes' || (data.items !== undefined && !Array.isArray(data.items))) throw new BadGatewayException('Resposta inválida do Google Books.');
         const volumes: Volume[] = data.items || [];
-        // O idioma desempata a ordenação, sem descartar o mesmo autor/série em outra língua.
-        return { results: volumes.filter(v => v?.id && volumeId.test(v.id) && clean(v.volumeInfo?.title)).map(v => this.title(v)), nextPage: volumes.length === 20 && page < 50 && data.totalItems > page * 20 ? page + 1 : null };
+        // O provedor pode ignorar langRestrict: a conferência local impede que
+        // edições de outro idioma ou sem idioma informado entrem nas sugestões.
+        return { results: volumes.filter(v => v?.id && volumeId.test(v.id) && clean(v.volumeInfo?.title) && editionMatchesLanguage(v, language)).map(v => this.title(v)), nextPage: volumes.length === 20 && page < 50 && data.totalItems > page * 20 ? page + 1 : null };
       })));
       const successful = pages.filter((p): p is PromiseFulfilledResult<BookSearchResultDto> => p.status === 'fulfilled');
       if (!successful.length) throw (pages[0] as PromiseRejectedResult).reason;
@@ -174,7 +181,7 @@ export class BooksService {
       const results = (related.length ? related : eligible).sort((a, b) => bookAffinity(b, profile) - bookAffinity(a, profile)).slice(0, 20);
       if (results.length) return { results, nextPage: successful.some(p => p.value.nextPage) ? page + 1 : null, personalized: true };
     }
-    const general = await this.generalSuggestions(page);
+    const general = await this.generalSuggestions(page, language);
     return { ...general, results: general.results.filter(book => !alreadyOwned(book, owned)), personalized: false };
   }
 }
@@ -190,7 +197,7 @@ export class BooksController {
     return user;
   }
   @Get('suggestions')
-  @ApiOperation({ summary: 'Sugestões baseadas nos livros privados', description: 'context=collection (padrão) considera exemplares possuídos; context=reading considera apenas o acompanhamento de leitura. Os contextos são independentes e restritos à sessão. Prioridade estrita: afinidade textual de título, depois mesmo autor e depois editora; gênero desempata. Afinidade de título é heurística, sem identificação oficial de franquia. Havendo resultados por título/autor, não completa a lista com editora apenas. Prefere o idioma do acervo sem excluir traduções relacionadas. Cópias repetidas não aumentam preferência; exclui posse e isola por sessão. Recupera metadados de até dois volumes antigos sem alterar datas/acompanhamento. Sem correspondências, seleção geral com personalized=false. Cache só de candidatos públicos; até 20 resultados por página.' })
+  @ApiOperation({ summary: 'Sugestões de livros no idioma do perfil', description: 'context=collection (padrão) considera exemplares possuídos; context=reading considera apenas o acompanhamento de leitura. Os contextos são independentes e restritos à sessão. Usa o idioma salvo na conta (pt-BR, en-US ou es-ES), com langRestrict e conferência local do idioma da edição; exclui outros idiomas e idioma ausente, sem traduzir artificialmente título/ISBN. O idioma dos livros possuídos não substitui a configuração do perfil. Prioridade estrita: título relacionado, depois mesmo autor e depois editora; gênero desempata. Havendo resultados por título/autor, não completa com editora apenas. Cópias repetidas não aumentam preferência; exclui posse e isola por sessão. Recupera metadados de até dois volumes antigos sem alterar datas/acompanhamento. Sem correspondências, seleção geral no idioma do perfil com personalized=false. Cache de candidatos públicos separado por idioma; até 20 resultados por página.' })
   @ApiOkResponse({ type: BookSearchResultDto })
   @ApiResponse({ status: 400, description: 'Página inválida ou parâmetro desconhecido.' })
   @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
@@ -198,7 +205,7 @@ export class BooksController {
   @ApiResponse({ status: 502, description: 'Falha na consulta ao Google Books.' })
   @ApiResponse({ status: 503, description: 'Chave ausente ou cota esgotada; cadastro manual disponível.' })
   async suggestions(@Req() request: Request, @Query() dto: BookSuggestionsDto) {
-    const user = await this.authorize(request); return this.books.suggestions(dto.page, user.id, dto.context);
+    const user = await this.authorize(request); return this.books.suggestions(dto.page, user.id, dto.context, user.language);
   }
   @Get('search')
   @ApiOperation({ summary: 'Buscar livros no Google Books por título, autor ou ISBN', description: 'Usada pela busca automática após pausa na digitação e pelo envio manual. 20 volumes por página. ISBN exige dígito verificador válido e correspondência exata da edição. Não altera acervo nem acompanhamento.' })

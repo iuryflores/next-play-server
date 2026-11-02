@@ -7,10 +7,24 @@ import { getConfig } from '../config';
 import type { LoginDto, RegisterDto, ProfileDto } from './auth.dto';
 import { AvatarStorage } from './avatar-storage';
 import { EmailConfirmation } from './email-confirmation';
+import type { Request } from 'express';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
   private dummyHash!: string;
+  private requestUsers = new WeakMap<Request, ReturnType<AuthService['me']>>();
+
+  forRequest(request: Request) {
+    // Dono e idioma compartilham a mesma validação, inclusive em chamadas paralelas.
+    // O cache vive apenas nesta requisição: logout e revogação são conferidos na próxima.
+    let user = this.requestUsers.get(request);
+    if (!user) {
+      const token: unknown = request.cookies?.[getConfig().cookieName];
+      user = this.me(typeof token === 'string' ? token : undefined);
+      this.requestUsers.set(request, user);
+    }
+    return user;
+  }
   constructor(
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(Session.name) private readonly sessions: Model<Session>,

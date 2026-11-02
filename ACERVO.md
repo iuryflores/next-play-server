@@ -31,13 +31,70 @@ São consultados título e autor, além da editora como fonte alternativa. Quand
 resultados relacionados ao título/autor, a lista não é completada com obras que
 só compartilham editora/gênero. Assim, uma editora grande não domina a lista.
 Quantidade de exemplares ou frequência da editora não ultrapassa a prioridade de
-título/autor. O idioma do acervo é preferido dentro de cada nível de afinidade,
-mas não elimina obras relacionadas em outro idioma. Cópias/edições repetidas não
+título/autor. O idioma salvo no perfil (pt-BR, en-US ou es-ES) define as edições
+elegíveis nas sugestões gerais e personalizadas, tanto na coleção quanto no
+Explorar. A consulta usa langRestrict e confere o idioma de cada edição: outros
+idiomas e idioma ausente são excluídos. O idioma dos livros já salvos não altera
+essa escolha. São usados os títulos reais da edição, sem traduzir artificialmente
+um volume de outro idioma ou trocar seu ISBN. Cópias/edições repetidas não
 dão votos extras, e referências/ISBNs/título-autoria já possuídos são excluídos.
 Empates de frequência respeitam a ordem mais recente dos livros do acervo.
 O cache compartilhado guarda apenas candidatos públicos por consulta; as
 preferências, exclusões e ordenação são calculadas por usuário a cada acesso.
 Adicionar ou remover livros muda as sugestões sem esperar o cache expirar.
+
+### Livros no Explorar
+
+`GET /api/library/explore` inclui livros do Google Books sem filtro ou em
+`kind=book`. Na interface, Explorar abre em Filmes e oferece somente as abas
+Filmes, Séries, Jogos e Livros, sem Todos. A personalização usa somente o acompanhamento de leitura da
+sessão (`context=reading`), mantendo exemplares possuídos separados. A ordem por
+título, autor e editora é preservada na interface; títulos já acompanhados são
+excluídos. Sem preferências, há sugestões gerais no idioma do perfil. As seções são
+consultadas em paralelo, e uma falha externa marca apenas a respectiva seção
+como indisponível. A paginação de livros vai até 50 e usa `nextPage`; os botões
+adicionam ao acompanhamento em Quero ler, sem criar cópias na Minha Coleção.
+
+### Prévia e conclusão no Explorar
+
+A capa e o nome de um título abrem uma prévia sem gravar acompanhamento ou
+posse. Filmes, séries e jogos carregam metadados públicos em
+`GET /api/catalog/details?catalogId=...`, no idioma da sessão; livros e títulos
+locais usam os dados já carregados. Filmes e séries TMDB também oferecem
+`GET /api/catalog/trailer?catalogId=...`, com fallback para inglês e somente
+chaves YouTube validadas. A falha do vídeo não bloqueia os detalhes ou o cadastro.
+
+Filmes têm a ação Adicionar como assistido no card e na prévia. A confirmação
+permite escolher data, estrelas e sentimento; o POST já salva `status=completed`,
+sem criar primeiro um registro planejado. Antes de salvar, a interface confere
+a lista atual: um filme planejado por outra aba é atualizado preservando suas
+anotações; uma conclusão existente não é sobrescrita. Cancelar não grava nada.
+No Explorar, adicionar ou concluir mantém a tela, o filtro e os cards nas mesmas
+posições; só as ações mudam para Adicionado/Assistido. Filmes/séries consultam
+`totalPages` do catálogo filtrado (até 500 páginas TMDB) e sorteiam páginas
+distintas de todo esse intervalo. A página 1 serve para conhecer o total, sem
+ser obrigatoriamente exibida. O histórico de páginas consultadas permanece no
+sessionStorage por categoria, idioma e preferências; a visita seguinte e o
+botão Novas sugestões evitam essas páginas até esgotar o ciclo. A rolagem
+continua a ordem sorteada usando um cursor por posição, inclusive quando a
+próxima página real é numericamente menor. Páginas que falham preservam o cursor
+e não são marcadas como visitadas. Apenas a categoria ativa é consultada. O cache
+do provedor é preservado. Livros
+mantêm a prioridade de título/autor/editora. Ver mais sugestões acrescenta
+lotes da reserva local antes de consultar novas páginas, sem reordenar os
+cards existentes; cada clique consulta no máximo três páginas externas.
+Ao alcançar o final de uma lista visível, o Explorar carrega o próximo lote
+automaticamente, usando IntersectionObserver e o loading compacto do app. Só
+um lote é carregado por vez; modais abertos pausam o disparo. Falhas e lotes
+sem novidades com cursor restante suspendem a continuação automática daquela
+categoria, preservando cards/cursor e oferecendo tentativa manual. Quando o
+catálogo termina, o observador deixa de acompanhar aquela lista.
+A quantidade de cards considera as colunas reais da grade: por exemplo, 12
+títulos em cinco colunas recebem mais três. A primeira carga, os próximos
+lotes e o redimensionamento completam a última fileira, usando primeiro a
+reserva local e depois novas páginas. Títulos já exibidos mantêm a ordem.
+Falhas/cota e o fim do catálogo mantêm os resultados reais disponíveis; não há
+duplicação nem cards fictícios para completar uma fileira sem candidatos.
 
 Quando faltam metadados, são recuperados até dois volumes antigos por acesso,
 com timeout de 6 segundos em paralelo e atualização restrita ao dono/volume.
@@ -47,7 +104,9 @@ impedem o uso dos metadados já salvos. Livros manuais sem referência não rece
 gêneros ou editora inferidos.
 
 Sem preferências disponíveis ou candidatos relacionados, a rota retorna uma
-seleção geral sobre literatura brasileira em português, ainda excluindo posse.
+seleção geral no idioma do perfil (literatura brasileira para português e
+literatura em inglês/espanhol), ainda excluindo posse. O cache público é
+separado por idioma para que mudar a preferência não reutilize outra língua.
 `personalized=true|false` informa qual modo foi usado; a interface diferencia os
 dois. Falha em uma fonte de candidatos permite usar a outra; falha em todas
 continua como erro explícito. As consultas relacionadas têm timeout de 8 segundos.

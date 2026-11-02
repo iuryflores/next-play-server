@@ -101,10 +101,42 @@ test('Game of Thrones e George R. R. Martin precedem LeYa sem preencher com edit
     queries.push(params.q);
     return { kind: 'books#volumes', totalItems: 3, items: [sequel, martin, leya].map((book, i) => ({ id: 'candidate' + i, volumeInfo: { ...book, categories: ['Fiction / Fantasy'] } })) };
   };
-  const result = await service.suggestions(1, a.toString());
+  const result = await service.suggestions(1, a.toString(), 'collection', 'en-US');
   assert.equal(result.personalized, true);
   assert.deepEqual(result.results.map(book => book.title), [sequel.title, martin.title]);
   assert.ok(queries.some(q => q.startsWith('intitle:'))); assert.ok(queries.some(q => q.includes('George R. R. Martin')));
+});
+
+test('idioma do perfil prevalece sobre livros salvos e cache separa pt/en/es com filtragem local',async()=>{
+  const seed={...classic,language:'en',ownerId:a,kind:'book'};
+  const service=new BooksService(fakeConnection([seed]).connection);const requests=[];
+  const titles={pt:'Outro clássico em português',en:'Another classic',es:'Otro clásico'};
+  service.request=async(_path,params)=>{
+    requests.push(params.langRestrict);
+    return {kind:'books#volumes',totalItems:5,items:[
+      ...Object.entries(titles).map(([language,title])=>({id:'edition_'+language,volumeInfo:{title,authors:classic.authors,publisher:'Rocco',language}})),
+      {id:'unknown',volumeInfo:{title:'Sem idioma',authors:classic.authors}},
+      {id:'invalid',volumeInfo:{title:'Idioma inválido',authors:classic.authors,language:123}},
+    ]};
+  };
+  for(const[locale,code]of [['pt-BR','pt'],['en-US','en'],['es-ES','es']]){
+    const before=requests.length;
+    const result=await service.suggestions(1,a.toString(),'collection',locale);
+    assert.equal(result.personalized,true);assert.deepEqual(result.results.map(book=>book.title),[titles[code]]);
+    assert.ok(result.results.every(book=>book.language===code));assert.ok(requests.slice(before).every(value=>value===code));
+  }
+  const previous=requests.length;
+  assert.equal((await service.suggestions(1,a.toString(),'collection','pt-BR')).results[0].language,'pt');assert.equal(requests.length,previous);
+});
+
+test('sugestões gerais sem histórico também seguem o idioma solicitado',async()=>{
+  const service=new BooksService();const requests=[];
+  service.request=async(_path,params)=>{requests.push(params.langRestrict);return {kind:'books#volumes',totalItems:3,items:['pt','en','es'].map(language=>({id:language,volumeInfo:{title:'Livro '+language,language}}))};};
+  for(const[locale,code]of [['pt-BR','pt'],['en-US','en'],['es-ES','es']]){
+    const result=await service.suggestions(1,undefined,'reading',locale);
+    assert.equal(result.personalized,false);assert.deepEqual(result.results.map(book=>book.language),[code]);
+  }
+  await service.suggestions(1,undefined,'reading','pt-BR');assert.deepEqual(requests,['pt','en','es']);
 });
 
 // O contexto de leitura não consulta exemplares nem compartilha o perfil privado de outro dono.

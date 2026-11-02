@@ -182,3 +182,19 @@ Referências: [NestJS + MongoDB](https://docs.nestjs.com/techniques/mongodb), [c
 ## Deploy e versionamento
 
 Consulte [DEPLOY.md](DEPLOY.md) para GitHub Actions, SSM, PM2, Nginx, portas, HTTPS e recuperação de versões.
+
+## Otimização de leituras autenticadas (local)
+
+`AuthService.forRequest` compartilha a validação da sessão entre dono e idioma dentro da mesma requisição HTTP. A listagem e as ações da biblioteca deixam de repetir as consultas de sessão/usuário no MongoDB. O cache usa a identidade do objeto da requisição e não é compartilhado entre requisições; logout, revogação e alterações de idioma continuam sendo verificados em cada novo acesso. Nenhum contrato de endpoint ou DTO foi alterado. Testes unitário e HTTP com banco descartável cobrem isolamento e revogação.
+
+Os templates Nginx deste repositório e do client também preparam gzip para os assets públicos do frontend; a configuração só será aplicada em um próximo deploy. Alterações locais, sem commit/push.
+
+## Conquistas (implementação local)
+
+As rotas autenticadas `GET /api/achievements`, `POST /api/achievements/sync`, `PATCH /api/achievements/title` e `POST /api/achievements/celebrations` estão documentadas no Swagger com DTOs de entrada/saída. Mutações exigem a origem do frontend. O servidor calcula as metas, valida o título escolhido e isola os dados por dono; não aceita pontos nem contagens enviados pelo navegador.
+
+São 11 famílias/54 metas: Primeiro play; Só mais um episódio (5–100, de 5 em 5); Temporada encerrada (1/5/10/25); Cinéfilo (10/25/50/100); Devorador de páginas (5/10/25/50); Colecionador (10/25/50/100); Até o último episódio (1/5/10/25 séries explicitamente concluídas); Universo em episódios (25/100/250/500 regulares distintos, incluindo legado/lotes); De volta aos clássicos (5/10/25/50 filmes anteriores a 2000); Na cadeira do crítico (5/10/25/50 filmes assistidos com nota de 1 a 5); Hoje tem final (uma temporada completa no mesmo dia, só marcações individuais, sem episódios futuros). Cada meta retorna `level` e `levels` para representar estrelas sem depender da posição no array. `achievement_awards` mantém desbloqueios/celebrações, com índice único por dono/ID; `achievement_profiles` mantém título/fuso. Concessões usam lote idempotente e leituras locais, sem consultas a provedores externos. Remover obras não revoga medalhas concedidas.
+
+O progresso de episódios novo recebe `watchOrigin=individual` somente na primeira marcação individual; lotes/conclusões recebem `bulk`. Reavaliações preservam a origem/data. O legado sem origem não qualifica maratonas. Episódios distintos são agrupados por dia civil no fuso IANA validado. Especiais são excluídos; temporadas precisam estar importadas integralmente, sem episódio futuro. Posse e consumo são contagens separadas. Filme/livro concluído e posse atuais podem gerar conquistas retroativas na sincronização.
+
+`test/achievements.test.cjs` usa banco local descartável e cobre regras de data/fuso, concorrência, autenticação/Origin, isolamento entre donos, títulos bloqueados, confirmação de celebrações, progresso legado/em lote, persistência após exclusões e os schemas do Swagger. Nenhuma configuração extra de ambiente é necessária. Trabalho local sem commit/push/deploy.

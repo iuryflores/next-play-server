@@ -1,4 +1,5 @@
-import { ApiTags, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiTags, ApiCookieAuth, ApiProperty, ApiOperation, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
+import { IsString, Matches } from 'class-validator';
 import { BadGatewayException, BadRequestException, Controller, Get, HttpException, Injectable, Module, Query, Req, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -13,6 +14,10 @@ export type ProductionCompany = { id: number; name: string; logoUrl?: string | n
 export interface CatalogTitle { platforms?: string[]; productionCompanies?: ProductionCompany[]; catalogId: string; kind: CatalogKind; title: string; originalTitle?: string; year: string; runtime?: number | null; releaseDate?: string; unreleased?: boolean; coverUrl: string; overview: string; sourceUrl: string; genres?: string[]; }
 type TmdbItem = { production_companies?: { id: number; name: string; logo_path?: string | null }[]; runtime?: number; status?: string; id: number; title?: string; name?: string; original_title?: string; original_name?: string; poster_path?: string; overview?: string; release_date?: string; first_air_date?: string; adult?: boolean; genres?: { id: number; name: string }[] };
 type IgdbItem = { platforms?: { name: string; abbreviation?: string }[]; game_localizations?: { name?: string; region?: { identifier?: string } }[]; id: number; name: string; summary?: string; first_release_date?: number; cover?: { image_id: string }; slug?: string; genres?: { id: number; name: string }[] };
+class CatalogDetailsQuery {
+  @ApiProperty({ example: 'tmdb:movie:11', pattern: '^(tmdb:(movie|series)|igdb:game):[1-9][0-9]{0,14}$', description: 'Referência pública de filme, série ou jogo; não aceita URLs nem IDs de itens privados.' })
+  @IsString() @Matches(/^(tmdb:(movie|series)|igdb:game):[1-9]\d{0,14}$/) catalogId!: string;
+}
 @Injectable()
 export class CatalogService {
   async directors(catalogId: string | undefined) {
@@ -139,7 +144,7 @@ export class CatalogService {
   }
   constructor(@InjectConnection() private readonly connection: Connection) {}
   private genreCache = new Map<string, { expires: number; values: { id: number; name: string }[] }>();
-  private cache = new Map<string, { expires: number; value: CatalogTitle[] }>();
+  private cache = new Map<string, { expires: number; value: CatalogTitle[]; totalPages?: number }>();
   private accessToken = ''; private tokenExpires = 0; private tokenPromise?: Promise<string>;
   private queue: Promise<unknown> = Promise.resolve();
   private lastRequest = 0;
@@ -205,9 +210,9 @@ export class CatalogService {
     for (const [id, data] of this.cache) if (data.expires < Date.now()) this.cache.delete(id);
     return this.cache.get(key)?.value;
   }
-  private remember(key: string, value: CatalogTitle[]) {
+  private remember(key: string, value: CatalogTitle[], totalPages?: number) {
     if (this.cache.size >= 500) this.cache.delete(this.cache.keys().next().value!);
-    this.cache.set(key, { expires: Date.now() + 600000, value }); return value;
+    this.cache.set(key, { expires: Date.now() + 600000, value, totalPages }); return value;
   }
   async suggestions(kind: string, ownerId?: string, language = 'pt-BR', page = 1, platform?: number) {
     if (platform !== undefined && (kind !== 'game' || !Number.isSafeInteger(platform) || platform < 1)) throw new BadRequestException('Plataforma inválida.');
@@ -239,6 +244,7 @@ export class CatalogService {
     const ids = preferred.map(g => g.id).sort((a, b) => a - b);
     const key = 'suggestions:' + kind + ':' + ids.join(',') + ':' + language + ':' + page + ':' + (platform ?? 'all');
     const cached = this.cached(key);
+    let totalPages = cached ? this.cache.get(key)?.totalPages : undefined;
     let results: CatalogTitle[];
     if (cached) results = cached;
     else if (kind === 'game') {
@@ -247,16 +253,20 @@ export class CatalogService {
       results = data.filter(item => Number.isSafeInteger(item.id) && typeof item.name === 'string').map(item => this.game(item, language));
     } else {
       const type = kind === 'movie' ? 'movie' : 'tv';
-      const pages = await Promise.all([page].map(page => this.tmdb<{ results: (TmdbItem & { genre_ids?: number[] })[] }>(ids.length ? `discover/${type}` : `${type}/popular`, { language, page: String(page), include_adult: 'false', ...(ids.length ? { with_genres: ids.join('|'), sort_by: 'popularity.desc' } : {}) })));
+      const pages = await Promise.all([page].map(page => this.tmdb<{ results: (TmdbItem & { genre_ids?: number[] })[]; total_pages?: number }>(ids.length ? `discover/${type}` : `${type}/popular`, { language, page: String(page), include_adult: 'false', ...(ids.length ? { with_genres: ids.join('|'), sort_by: 'popularity.desc' } : {}) })));
       if (pages.some(data => !Array.isArray(data.results))) throw new BadGatewayException('Resposta inválida do catálogo.');
+      // O limite real permite sortear páginas do catálogo inteiro, sem ficar
+      // preso à primeira página nem consultar além do teto público do TMDB.
+      const reportedPages = pages[0].total_pages;
+      if (Number.isSafeInteger(reportedPages) && reportedPages! >= 0) totalPages = Math.min(reportedPages!, 500);
       results = pages.flatMap(data => data.results).filter(item => Number.isSafeInteger(item.id) && !item.adult).map(item => this.movie({ ...item, genres: item.genres || directory.filter(g => item.genre_ids?.includes(g.id)) }, kind as 'movie' | 'series'));
     }
-    if (!cached) this.remember(key, results);
+    if (!cached) this.remember(key, results, totalPages);
     const ownedIds = new Set(owned.map(item => item.catalogId));
     const ownedNames = new Set(owned.map(item => normalize(item.title)));
     const unique = [...new Map(results.map(item => [item.catalogId, item])).values()];
     const score = (item: CatalogTitle) => (item.genres || []).reduce((sum, name) => sum + (weights.get(normalize(name)) || 0), 0);
-    return { results: unique.filter(item => !ownedIds.has(item.catalogId) && !ownedNames.has(normalize(item.title))).sort((a, b) => score(b) - score(a)), nextPage: results.length >= 20 && page < 500 ? page + 1 : null };
+    return { results: unique.filter(item => !ownedIds.has(item.catalogId) && !ownedNames.has(normalize(item.title))).sort((a, b) => score(b) - score(a)), nextPage: totalPages === undefined ? results.length >= 20 && page < 500 ? page + 1 : null : page < totalPages ? page + 1 : null, ...(totalPages === undefined ? {} : {totalPages}) };
   }
   private searchCache = new Map<string, { expires: number; value: { results: CatalogTitle[]; nextPage: number | null } }>();
   async search(kind: string, query: string, language = 'pt-BR', page = 1, platform?: number) {
@@ -352,8 +362,61 @@ export class CatalogService {
 class CatalogController {
   constructor(private readonly service: CatalogService, private readonly auth: AuthService) {}
   private async authorize(request: Request) { const raw: unknown = request.cookies?.[getConfig().cookieName]; return this.auth.me(typeof raw === 'string' ? raw : undefined); }
+  @Get('details')
+  @ApiOperation({ summary: 'Consultar detalhes antes de adicionar ao acompanhamento', description: 'Retorna {title} com metadados públicos do TMDB/IGDB no idioma da sessão: sinopse, gêneros, capa, ano, lançamento e duração/produtoras/plataformas quando disponíveis. Não cria itens no acompanhamento nem exemplares na coleção. Livros e títulos manuais usam os metadados já disponíveis na tela.' })
+  @ApiOkResponse({ description: 'Objeto title com catalogId, kind, title, originalTitle, year, coverUrl, overview, sourceUrl, genres e metadados opcionais do provedor.' })
+  @ApiResponse({ status: 400, description: 'Referência ou parâmetros inválidos, ou título indisponível.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas por usuário.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do provedor.' })
+  @ApiResponse({ status: 503, description: 'Provedor não configurado.' })
+  async details(@Req() request: Request, @Query() query: CatalogDetailsQuery) {
+    const user = await this.authorize(request);
+    this.service.limit(user.id);
+    // Prévia consulta o catálogo diretamente; não exige criar um item privado provisório.
+    return { title: await this.service.detail(query.catalogId, user.language) };
+  }
+  @Get('trailer')
+  @ApiOperation({ summary: 'Consultar trailer antes de adicionar um título', description: 'Consulta o TMDB no idioma da sessão com fallback para inglês; retorna somente trailer/teaser com chave YouTube validada. Não cria acompanhamento. Para jogos ou quando não há vídeo, retorna trailer=null.' })
+  @ApiOkResponse({ description: 'Objeto trailer: {key, name, language} ou null. A preferência é por trailer oficial.' })
+  @ApiResponse({ status: 400, description: 'Referência ou parâmetros inválidos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas por usuário.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do TMDB.' })
+  @ApiResponse({ status: 503, description: 'TMDB não configurado.' })
+  async trailer(@Req() request: Request, @Query() query: CatalogDetailsQuery) {
+    const user = await this.authorize(request);
+    this.service.limit(user.id);
+    return { trailer: await this.service.trailer(query.catalogId, user.language) };
+  }
+  @Get('cast')
+  @ApiOperation({ summary: 'Consultar elenco antes de adicionar um título', description: 'Elenco público do TMDB no idioma da sessão, sem criar acompanhamento ou cópia. Retorna IDs estáveis de personagem/ator usados para validar o voto no cadastro como assistido. Para jogos retorna supported=false e elenco vazio. Falhas permitem nova tentativa e não exigem gravar um item provisório.' })
+  @ApiOkResponse({ schema: {
+    type: 'object', required: ['cast', 'supported'], properties: {
+      supported: { type: 'boolean' },
+      cast: { type: 'array', items: {
+        type: 'object', required: ['id', 'actor', 'character', 'photo'], properties: {
+          id: { type: 'string', example: '42:Personagem' }, actor: { type: 'string' },
+          character: { type: 'string' }, photo: { type: 'string' },
+        },
+      } },
+    },
+  } })
+  @ApiResponse({ status: 400, description: 'Referência ou parâmetros inválidos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas por usuário.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do catálogo.' })
+  @ApiResponse({ status: 503, description: 'TMDB não configurado.' })
+  async cast(@Req() request: Request, @Query() query: CatalogDetailsQuery) {
+    const user = await this.authorize(request);
+    this.service.limit(user.id);
+    return {cast:await this.service.cast(query.catalogId,user.language),supported:query.catalogId.startsWith('tmdb:')};
+  }
   @Get('providers') async providers(@Req() request: Request) { await this.authorize(request); return this.service.available(); }
-  @Get('suggestions') async suggestions(@Req() request: Request, @Query('kind') kind: string, @Query('page') page?: string, @Query('platform') platform?: string) { const user = await this.authorize(request); this.service.limit(user.id); return this.service.suggestions(kind, user.id, user.language, page === undefined ? 1 : Number(page), platform === undefined ? undefined : Number(platform)); }
+  @Get('suggestions')
+  @ApiOperation({ summary: 'Sugestões por preferências e página do catálogo', description: 'Retorna results e nextPage. Filmes/séries priorizam afinidade de gêneros e preservam a ordem de popularidade do TMDB nos empates de afinidade; quando há gêneros reconhecidos, o provedor filtra os gêneros antes de ordenar por popularity.desc. Também retornam totalPages quando informado pelo TMDB, limitado a 500, para descoberta em páginas variadas. Cache público separado por gênero, idioma, página e plataforma; exclusão de títulos acompanhados é aplicada por sessão.' })
+  @ApiOkResponse({ description: 'results, nextPage (número ou null) e totalPages opcional de 0 a 500 para TMDB.' })
+  async suggestions(@Req() request: Request, @Query('kind') kind: string, @Query('page') page?: string, @Query('platform') platform?: string) { const user = await this.authorize(request); this.service.limit(user.id); return this.service.suggestions(kind, user.id, user.language, page === undefined ? 1 : Number(page), platform === undefined ? undefined : Number(platform)); }
   @Get('search') async search(@Req() request: Request, @Query('kind') kind: string, @Query('q') query: string, @Query('page') page?: string, @Query('platform') platform?: string) { const user = await this.authorize(request); this.service.limit(user.id); return this.service.search(kind, query, user.language, page === undefined ? 1 : Number(page), platform === undefined ? undefined : Number(platform)); }
 }
 @Module({ imports: [AuthModule], controllers: [CatalogController], providers: [CatalogService], exports: [CatalogService] })
