@@ -58,6 +58,7 @@ aws() {
   case "$1 $2" in
     's3 cp'|'s3 rm') return 0 ;;
     'ssm send-command') echo 'test-command-id' ;;
+    'ssm list-command-invocations') echo '{"stderr":"falha simulada do agente","code":1}' ;;
     'ssm get-command-invocation')
       if [[ "$TERMINAL" == QueryDenied ]]; then echo AccessDeniedException >&2; return 254; fi
       if [[ "$*" == *'--output json'* ]]; then echo '{"stdout":"[nextplay] Falha simulada","stderr":"SMTP_PASS=nao-deve-aparecer"}'; else echo "$TERMINAL"; fi ;;
