@@ -50,6 +50,17 @@ for attempt in {1..210}; do
       else
         echo '[nextplay] Diagnóstico adicional do agente indisponível.' >&2
       fi
+      # Uma prova sem alterações distingue falha do agente de falha do pacote da aplicação.
+      if [[ $(node -p 'const d=require(process.argv[1]);Number(!d.stdout&&!d.stderr)' "$task_dir/result.json") == 1 ]]; then
+        aws ssm describe-instance-information --region "$AWS_REGION" --filters "Key=InstanceIds,Values=$EC2_INSTANCE_ID" --query 'InstanceInformationList[].{PingStatus:PingStatus,AgentVersion:AgentVersion}' --output json || true
+        probe_id=$(aws ssm send-command --region "$AWS_REGION" --instance-ids "$EC2_INSTANCE_ID" --document-name AWS-RunShellScript --parameters '{"commands":["echo nextplay-ssm-probe-ok"]}' --timeout-seconds 30 --comment 'NextPlay diagnóstico sem alterações' --query Command.CommandId --output text) || probe_id=''
+        if [[ -n "$probe_id" ]]; then
+          aws ssm wait command-executed --region "$AWS_REGION" --command-id "$probe_id" --instance-id "$EC2_INSTANCE_ID" >/dev/null 2>&1 || true
+          aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$probe_id" --instance-id "$EC2_INSTANCE_ID" --query '{stdout:StandardOutputContent,stderr:StandardErrorContent,code:ResponseCode}' --output json > "$task_dir/probe.json"
+          echo '[nextplay] Resultado do teste mínimo do agente SSM:'
+          node scripts/deploy-diagnostic.mjs "$task_dir/probe.json"
+        fi
+      fi
       exit 1 ;;
     Pending|InProgress|Delayed|Cancelling) sleep 5 ;;
     *) echo '[nextplay] Status SSM inesperado.' >&2; exit 1 ;;
