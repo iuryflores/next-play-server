@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/iuryflores/next-play-server/compare/v0.6.0...v0.7.0) (2026-11-02)
+
+
+### Features
+
+* adiciona notificações, níveis de perfil e registro rápido de jogos ([0947fbd](https://github.com/iuryflores/next-play-server/commit/0947fbd3501d308ec738afd70abdb63406683a89))
+
 ## [0.6.0](https://github.com/iuryflores/next-play-server/compare/v0.5.7...v0.6.0) (2026-11-02)
 
 
