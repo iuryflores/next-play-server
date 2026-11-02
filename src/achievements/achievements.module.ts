@@ -1,3 +1,4 @@
+import { saveNotification } from '../notifications/notification-store';
 import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, Injectable, Module, OnModuleInit, Patch, Post, Req } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
@@ -165,6 +166,7 @@ export class AchievementsService implements OnModuleInit {
       }
     }
     const [rows, currentProfile] = await Promise.all([this.awards().find({ ownerId }).toArray(), this.profiles().findOne({ ownerId })]);
+    if (unlock) await Promise.all(rows.map(row => saveNotification(this.connection, { ownerId, kind: 'achievement', sourceId: row.key, createdAt: row.unlockedAt })));
     const awards = new Map(rows.map(row => [row.key, row]));
     const progression = (family: string, metric: AchievementMetric) => {
       const milestones = achievements.filter(item => item.family === family && !item.legacy);

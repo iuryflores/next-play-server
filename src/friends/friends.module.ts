@@ -1,3 +1,5 @@
+import { saveNotification } from '../notifications/notification-store';
+import { levelFromXp } from '../progression/progression-rules';
 import { ApiProperty, ApiTags, ApiCookieAuth, ApiOperation, ApiOkResponse } from '@nestjs/swagger';
 import { Body, Controller, Delete, Get, Post, HttpCode, Injectable, Module, Param, Query, Req, ForbiddenException, BadRequestException, NotFoundException, ConflictException, OnModuleInit } from '@nestjs/common';
 import { InjectConnection, InjectModel, MongooseModule, Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
@@ -40,7 +42,10 @@ class FriendsService implements OnModuleInit {
     if (!await this.connection.collection('users').findOne({ _id: new Types.ObjectId(target) }, { projection: { _id: 1 } })) throw new NotFoundException('Código de amigo não encontrado.');
     if (await this.friends.countDocuments(this.member(id)) >= 100) throw new BadRequestException('Você atingiu o limite de 100 conexões.');
     if (await this.friends.countDocuments({ sender: id, status: 'pending' }) >= 20) throw new BadRequestException('Você já tem 20 pedidos pendentes.');
-    try { await this.friends.create({ pair: [id, target].sort().join(':'), sender: id, receiver: target, status: 'pending' }); }
+    try {
+      const invitation = await this.friends.create({ pair: [id, target].sort().join(':'), sender: id, receiver: target, status: 'pending' });
+      await saveNotification(this.connection, { ownerId: new Types.ObjectId(target), kind: 'friend-request', sourceId: invitation._id.toString(), senderId: id, createdAt: new Date() });
+    }
     catch (error) { if ((error as { code?: number }).code === 11000) throw new ConflictException('Vocês já são amigos ou têm um pedido pendente.'); throw error; }
   }
   async accept(id: string, requestId: string) {
@@ -68,14 +73,33 @@ class FriendsService implements OnModuleInit {
     };
     const name = (userId: string) => users.find(user => user._id.toString() === userId)?.displayName || `Player ${userId.slice(-6)}`;
     const rankingIds = scope === 'all' ? users.map(user => user._id.toString()) : [id, ...links.filter(link => link.status === 'accepted').map(link => link.sender === id ? link.receiver : link.sender)];
-    const ranked: { id: string; name: string; avatar: string; connection: { id: string; status: string; incoming: boolean } | null; me: boolean; minutes: number; episodes: number; incomplete: boolean; achievement: ReturnType<typeof achievement> }[] = [];
+    // Só os totais são públicos. Consultas em lote evitam buscar o histórico privado de XP por usuário.
+    const ownerIds = rankingIds.map(value => new Types.ObjectId(value));
+    const [completed, credits] = await Promise.all([
+      this.connection.collection('library_items').find({ ownerId: { $in: ownerIds }, kind: { $in: ['book', 'game'] }, status: 'completed' }, { projection: { ownerId: 1, kind: 1, title: 1, year: 1, catalogId: 1, catalogKey: 1 } }).toArray(),
+      this.connection.collection('user_xp_credits').aggregate<{ _id: Types.ObjectId; xp: number }>([
+        { $match: { ownerId: { $in: ownerIds } } },
+        { $group: { _id: '$ownerId', xp: { $sum: { $multiply: ['$units', '$rate'] } } } },
+      ]).toArray(),
+    ]);
+    const counts = new Map<string, { books: Set<string>; games: Set<string> }>();
+    for (const item of completed) {
+      const userId = item.ownerId.toString();
+      const entry = counts.get(userId) || { books: new Set<string>(), games: new Set<string>() };
+      const identity = item.catalogId || item.catalogKey || `${item.title.trim().toLowerCase()}:${item.year || ''}`;
+      (item.kind === 'book' ? entry.books : entry.games).add(identity);
+      counts.set(userId, entry);
+    }
+    const xpByOwner = new Map(credits.map(row => [row._id.toString(), row.xp]));
+    const ranked: { id: string; name: string; avatar: string; connection: { id: string; status: string; incoming: boolean } | null; me: boolean; minutes: number; episodes: number; books: number; games: number; xp: number; level: number; incomplete: boolean; achievement: ReturnType<typeof achievement> }[] = [];
     for (const userId of rankingIds) {
       const stats = await this.library.stats(userId);
       const user = users.find(user => user._id.toString() === userId);
       // URLs temporárias não expõem credenciais; falha da foto não impede consultar o ranking.
       const avatar = user?.avatarKey ? await this.avatars.signedUrl(user.avatarKey).catch(() => '') : user?.avatar || '';
       const link = links.find(link => link.sender === userId || link.receiver === userId);
-      ranked.push({ id: userId, name: name(userId), avatar, connection: userId !== id && link ? { id: link._id.toString(), status: link.status, incoming: link.receiver === id } : null, me: userId === id, minutes: stats.minutes, episodes: stats.episodes, incomplete: stats.missingRuntime > 0 || stats.pendingSeries > 0, achievement: achievement(userId) });
+      const xp = xpByOwner.get(userId) || 0;
+      ranked.push({ id: userId, name: name(userId), avatar, connection: userId !== id && link ? { id: link._id.toString(), status: link.status, incoming: link.receiver === id } : null, me: userId === id, minutes: stats.minutes, episodes: stats.episodes, books: counts.get(userId)?.books.size || 0, games: counts.get(userId)?.games.size || 0, xp, level: levelFromXp(xp).level, incomplete: stats.missingRuntime > 0 || stats.pendingSeries > 0, achievement: achievement(userId) });
     }
     ranked.sort((a, b) => b.minutes - a.minutes || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     const comparison = await compareRankingVisit(this.connection, id, scope === 'all' ? 'users' : 'friends', visitId, { friends: positions(ranked.map(entry => ({ id: entry.id, count: entry.minutes }))) });
@@ -94,7 +118,7 @@ class FriendsController {
     return (await this.auth.me(typeof token === 'string' ? token : undefined)).id;
   }
   @Get()
-  @ApiOperation({ summary: 'Listar amigos ou todos os usuários e seu ranking', description: 'Requer sessão. Retorna code, name, connections (amizades e pedidos) e ranking do escopo solicitado, incluindo posição, movimento, nome público, avatar (URL temporária ou foto legada; vazio se indisponível), connection (id/status/incoming ou null), tempo, episódios e achievement (título escolhido e progresso ou null). Não retorna emails, coleção, avaliações ou evidências de conquistas. Rankings dos dois escopos mantêm históricos de movimento independentes.' })
+  @ApiOperation({ summary: 'Listar amigos ou todos os usuários e seu ranking', description: 'Requer sessão. Retorna code, name, connections (amizades e pedidos) e ranking do escopo solicitado, incluindo posição, movimento, nome público, avatar (URL temporária ou foto legada; vazio se indisponível), connection (id/status/incoming ou null), tempo, episódios, books (livros lidos distintos), games (jogos concluídos distintos), xp (XP total já reconhecido e persistido), level (nível geral correspondente) e achievement (título escolhido e progresso ou null). Não retorna emails, coleção, avaliações ou evidências de conquistas. Contagens incluem arquivados, excluem planejados/em andamento e não expõem nomes de obras. Contas ainda não sincronizadas têm zero XP reconhecido. A consulta não concede XP. A ordenação permanece pelo tempo em séries; rankings dos dois escopos mantêm históricos de movimento independentes.' })
   @ApiOkResponse({ description: 'Perfil da sessão, conexões e ranking do escopo friends (padrão) ou all.' })
   async list(@Req() request: Request, @Query() query: FriendsQueryDto) { return this.friends.list(await this.owner(request), request.get('X-Ranking-Visit'), query.scope); }
   @Post('profile') @HttpCode(204) async profile(@Req() request: Request, @Body() dto: FriendProfileDto) { await this.friends.profile(await this.owner(request), dto.name); }

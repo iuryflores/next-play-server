@@ -104,6 +104,12 @@ class CommentDto {
 }
 class ArchiveDto { @ApiProperty({ type: Boolean, required: true })
   @IsBoolean() archived!: boolean; }
+class GameTimeDto {
+  @ApiProperty({ enum: ['add', 'total'], description: 'add soma minutos ao tempo salvo; total substitui o total acumulado.' })
+  @IsIn(['add', 'total']) mode!: 'add' | 'total';
+  @ApiProperty({ type: 'integer', minimum: 0, maximum: 6000000, description: 'Minutos inteiros. add exige pelo menos 1; total aceita zero. Total acumulado limitado a 6.000.000 minutos.' })
+  @IsInt() @Min(0) @Max(6000000) minutes!: number;
+}
 class ItemDto {
   @ApiProperty({ type: String, required: true, minLength: 1, maxLength: 200 })
   @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
@@ -474,6 +480,23 @@ export class LibraryService implements OnModuleInit {
     if (item.catalogKey !== key) { item.catalogKey = key; await item.save(); }
     return this.publicItem(item);
   }
+  async gameTime(ownerId: string, id: string, dto: GameTimeDto) {
+    if (dto.mode === 'add' && dto.minutes === 0) throw new BadRequestException('Informe pelo menos um minuto jogado.');
+    const filter = { _id: this.id(id), ownerId, kind: 'game' };
+    // A soma ocorre no banco, evitando perder horas quando duas abas registram tempo juntas.
+    const item = await this.items.findOneAndUpdate({ ...filter, ...(dto.mode === 'add' ? { $or: [{ playtimeMinutes: { $lte: 6000000 - dto.minutes } }, { playtimeMinutes: { $exists: false } }] } : {}) }, [
+      { $set: {
+        playtimeMinutes: dto.mode === 'add' ? { $add: [{ $ifNull: ['$playtimeMinutes', 0] }, dto.minutes] } : dto.minutes,
+        // Jogar um título planejado inicia o acompanhamento; jogos concluídos mantêm sua conclusão.
+        status: dto.minutes > 0 ? { $cond: [{ $eq: ['$status', 'planned'] }, 'active', '$status'] } : '$status',
+      } },
+    ], { returnDocument: 'after', updatePipeline: true }).exec();
+    if (!item) {
+      if (await this.items.exists(filter)) throw new BadRequestException('O tempo total ultrapassa o limite permitido.');
+      throw new NotFoundException('Jogo não encontrado.');
+    }
+    return this.publicItem(item);
+  }
   async archive(ownerId: string, id: string, archived: boolean) {
     const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId }, { $set: { archived } }, { returnDocument: 'after', runValidators: true }).exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
@@ -524,6 +547,13 @@ class LibraryController {
   @ApiOperation({ summary: 'Atualizar acompanhamento privado', description: 'Para livros, altera estado de leitura, data, nota e anotações. Voltar de Lido remove os dados de conclusão. Somente dono; não altera exemplares da Minha Coleção.' })
   async update(@Req() request: Request, @Param('id') id: string, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.update(await this.owner(request), id, dto), await this.language(request)) }; }
   @Delete(':id') @HttpCode(204) async remove(@Req() request: Request, @Param('id') id: string) { await this.library.remove(await this.owner(request), id); }
+  @Patch(':id/playtime')
+  @ApiOperation({ summary: 'Registrar tempo jogado rapidamente', description: 'Somente jogos do dono. Soma minutos atomicamente ou substitui o total. Não altera notas, plataforma ou conclusão. Jogos planejados passam para Jogando. Não cria histórico diário de sessões.' })
+  @ApiOkResponse({ description: 'Objeto item atualizado, com playtimeMinutes em minutos.' })
+  @ApiResponse({ status: 400, description: 'Modo/minutos inválidos, soma zero ou total acima de 6.000.000 minutos.' })
+  @ApiResponse({ status: 404, description: 'Jogo inexistente, categoria diferente ou item de outra conta.' })
+  @ApiResponse({ status: 403, description: 'Origem não permitida.' })
+  async gameTime(@Req() request: Request, @Param('id') id: string, @Body() dto: GameTimeDto) { return { item: await this.catalog.localize(await this.library.gameTime(await this.owner(request), id, dto), await this.language(request)) }; }
   @Post(':id/archive') @HttpCode(200) async archive(@Req() request: Request, @Param('id') id: string, @Body() dto: ArchiveDto) { return { item: await this.catalog.localize(await this.library.archive(await this.owner(request), id, dto.archived), await this.language(request)) }; }
 }
 @Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService], exports: [LibraryService] })

@@ -57,6 +57,45 @@ endpoints, mantenha os decorators OpenAPI e os comentários relevantes atualizad
 | POST | `/api/auth/google/start` | 503, reservado para configuração posterior |
 | POST | `/api/auth/phone/start` | 503, reservado para configuração posterior |
 
+## Nível geral e experiência do perfil
+
+`POST /api/progression/sync` reconhece o histórico da sessão no MongoDB;
+`GET /api/progression` consulta o estado persistido sem sincronizar. Ambos exigem
+sessão e retornam nível, XP total, progresso no nível, divisão por atividade e
+até 20 atividades creditadas recentemente. O POST também exige a origem autorizada.
+
+Regras iniciais: filme 20 XP, episódio regular 5, livro concluído 50, jogo
+concluído 50, hora inteira jogada 2 (primeiras 100 horas por jogo), avaliação com
+nota ou sentimento 3 e conquista já concedida 25. Datas desconhecidas e itens
+arquivados contam; adicionar uma intenção de consumo não pontua. Avaliações de
+obras exigem conclusão; avaliações de episódios exigem marcação assistida.
+
+O nível 1 começa com zero XP; chegar ao nível 2 exige 100 XP, depois cada novo
+avanço exige mais 25 XP. O nível geral não interfere nos níveis das conquistas.
+Créditos de `user_xp_credits` usam identidade estável de obra/episódio/conquista,
+com maior quantidade de horas reconhecida. Editar, desmarcar, excluir ou
+recadastrar a mesma identidade não duplica nem remove XP reconhecido. Os
+carimbos de data indicam reconhecimento no XP, inclusive para importações
+retroativas, e não inventam datas de consumo. A origem do XP é privada.
+
+Validação isolada: `node --test test/progression.test.cjs` após o build.
+
+## Notificações no aplicativo
+
+`user_notifications` guarda eventos privados de conquistas e convites recebidos,
+com índice único por dono, tipo e origem. `GET /api/notifications` retorna até 30
+eventos, `unreadCount` global e `nextCursor` para a próxima página. A consulta
+recupera conquistas anteriores e convites pendentes, sem marcar leitura.
+
+`PATCH /api/notifications/:id/read` e `POST /api/notifications/read-all` salvam a
+leitura no MongoDB, exigem sessão e origem autorizada e retornam 204. A leitura é
+independente da confirmação de celebrações. Convites aceitos ou encerrados
+permanecem no histórico, com status atual consultado no servidor. O cliente usa
+os endpoints de amizades existentes para aceitar ou recusar; atualiza o contador
+a cada 30 segundos enquanto visível e após ações locais. Não usa push externo.
+
+Validação isolada: `node --test test/notifications.test.cjs` após o build.
+
 ## Autenticação
 
 ### Confirmação de e-mail no cadastro

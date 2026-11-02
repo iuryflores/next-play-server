@@ -10,6 +10,8 @@ import { AuthModule } from './auth/auth.module';
 import { CollectorModule } from './collector/collector.module';
 import { getConfig } from './config';
 import { AchievementsModule } from './achievements/achievements.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { ProgressionModule } from './progression/progression.module';
 
 @ApiTags('health')
 @Controller('health')
@@ -29,7 +31,7 @@ class HealthController {
       connection.on('error', (error: Error & { code?: string | number }) => console.error(`[MongoDB] Erro de conexão: ${error.name}${error.code ? ` (${error.code})` : ''}`));
       return connection;
     },
-  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule],
+  }) }), AuthModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule],
   controllers: [HealthController],
 })
 export class AppModule {}

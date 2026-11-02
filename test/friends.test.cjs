@@ -57,6 +57,34 @@ test('friend acceptance gates rankings, ranks time fairly and supports removal',
   const friendRanking=await (await call('/friends','GET',undefined,a.cookie)).json();
   assert.equal(friendRanking.ranking.length,2);
   assert.equal(friendRanking.ranking[0].achievement.title,'Cinéfilo');
+  // Os novos indicadores publicam somente totais, com identidade distinta e escopos preservados.
+  await db.collection('library_items').insertMany([
+    {ownerId:new Types.ObjectId(b.id),kind:'book',status:'completed',title:'Livro privado',catalogKey:'local:book:one',archived:true},
+    {ownerId:new Types.ObjectId(b.id),kind:'book',status:'completed',title:'Cópia duplicada',catalogKey:'local:book:one'},
+    {ownerId:new Types.ObjectId(b.id),kind:'game',status:'completed',title:'Jogo privado',catalogKey:'local:game:one',playtimeMinutes:60},
+    {ownerId:new Types.ObjectId(b.id),kind:'book',status:'active',title:'Leitura em andamento'},
+    {ownerId:new Types.ObjectId(b.id),kind:'game',status:'planned',title:'Planejado privado'},
+    {ownerId:new Types.ObjectId(c.id),kind:'book',status:'completed',title:'Livro de outra conta'},
+  ]);
+  const beforeXp=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
+  assert.equal(beforeXp.ranking.find(row=>row.id===b.id).xp,0,'consultar ranking não concede XP');
+  const xpResponse=await call('/progression/sync','POST',{},b.cookie);
+  assert.equal(xpResponse.status,200);
+  const xpState=await xpResponse.json();
+  for(const scope of ['friends','all']) {
+    const summary=await (await call('/friends?scope='+scope,'GET',undefined,a.cookie)).json();
+    const row=summary.ranking.find(row=>row.id===b.id);
+    assert.equal(row.books,1,'livros concluídos distintos, inclusive arquivados');
+    assert.equal(row.games,1,'planejados não contam como concluídos');
+    assert.equal(row.xp,xpState.totalXp); assert.equal(row.level,xpState.level);
+    assert.equal(summary.ranking.find(row=>row.id===a.id).books,0);
+    assert.equal(summary.ranking.find(row=>row.id===a.id).games,0);
+    assert.equal(summary.ranking.find(row=>row.id===a.id).xp,0);
+    assert.equal(row.rank,1,'novas colunas preservam a ordenação por tempo');
+    assert.equal(summary.ranking.some(row=>row.id===c.id),scope==='all');
+    if(scope==='all') assert.equal(summary.ranking.find(row=>row.id===c.id).books,1);
+    for(const privateValue of ['Livro privado','Jogo privado','Cópia duplicada','Livro de outra conta','recordedAt','Evidência privada']) assert.ok(!JSON.stringify(summary).includes(privateValue));
+  }
   assert.ok(await db.collection('ranking_visits').findOne({_id:a.id+':users'}));
   assert.ok(await db.collection('ranking_visits').findOne({_id:a.id+':friends'}));
   assert.equal((await call('/friends/' + id, 'DELETE', undefined, c.cookie)).status, 404);
