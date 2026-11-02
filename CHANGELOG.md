@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/iuryflores/next-play-server/compare/v0.5.4...v0.5.5) (2026-11-02)
+
+
+### Bug Fixes
+
+* inclui erro de sistema SSM com valores privados removidos ([7401533](https://github.com/iuryflores/next-play-server/commit/7401533aef1abd25b6148b164123922b03a320bd))
+
 ## [0.5.4](https://github.com/iuryflores/next-play-server/compare/v0.5.3...v0.5.4) (2026-11-02)
 
 
