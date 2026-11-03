@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.0](https://github.com/iuryflores/next-play-server/compare/v0.11.0...v1.0.0) (2026-11-03)
+
+
+### Features
+
+* amplia comunidade, perfis e estatisticas privadas ([e37625e](https://github.com/iuryflores/next-play-server/commit/e37625e5caade897b7908603a25c25f86b8c8bb3))
+* integra Steam e PSN e planeja backlog de jogos ([c7de054](https://github.com/iuryflores/next-play-server/commit/c7de054f0629e2c17539d695abf86779f665181c))
+
 ## [0.11.0](https://github.com/iuryflores/next-play-server/compare/v0.10.0...v0.11.0) (2026-11-02)
 
 
