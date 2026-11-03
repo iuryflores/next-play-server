@@ -59,6 +59,7 @@ else
     ln -s "$app_root/shared/assets" "$release/dist/assets"
   fi
 fi
+phase='validação da configuração de produção'
 node "$helper" create "$release" "$name" "$release/ecosystem.config.json" "$release_id"
 activate() { rm -f -- "$app_root/.current-$release_id"; ln -s "$1" "$app_root/.current-$release_id"; mv -Tf "$app_root/.current-$release_id" "$app_root/current"; }
 rollback() {

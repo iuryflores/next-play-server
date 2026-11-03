@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ssmParameters, previousConfig, assertPortOwner, releaseConfig, settings } from '../scripts/deploy-config.mjs';
+import { ssmParameters, previousConfig, assertPortOwner, releaseConfig, settings, invalidProductionFields, ProductionEnvironmentError } from '../scripts/deploy-config.mjs';
 
 const releaseId = 'a'.repeat(40) + '-42-1';
 const input = { releaseId, bucket: 'nextplay-deploy-example', region: 'us-east-1', user: 'ubuntu', name: `nextplay-${settings.kind}`, checksum: 'b'.repeat(64) };
@@ -51,4 +51,14 @@ test('Nginx mantém API fora do fallback SPA e reserva arquivo exclusivo do dom�
     assert.ok(!config.includes('default_server'));
     assert.ok(!config.includes('$request"'));
   }
+});
+
+test('diagnóstico de ambiente identifica somente nomes de campos sem revelar seus valores', () => {
+  const valid = {NODE_ENV:'production',CLIENT_ORIGIN:`https://${settings.domain}`,MONGODB_URI:'mongodb://usuario:segredo@host/db'};
+  assert.deepEqual(invalidProductionFields(valid), []);
+  assert.deepEqual(invalidProductionFields({...valid,NODE_ENV:'development',PORT:'3001'}), ['NODE_ENV','PORT']);
+  assert.deepEqual(invalidProductionFields({...valid,CLIENT_ORIGIN:'https://outro-host',HOST:'0.0.0.0'}), ['CLIENT_ORIGIN','HOST']);
+  assert.deepEqual(invalidProductionFields({...valid,MONGODB_URI:''}), ['MONGODB_URI']);
+  const error = new ProductionEnvironmentError(invalidProductionFields({...valid,PORT:'segredo'}));
+  assert.equal(JSON.stringify(error).includes('segredo'), false);
 });

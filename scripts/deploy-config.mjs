@@ -59,14 +59,26 @@ export function assertPortOwner(listeners, processes, name) {
   const pids = [...listeners.matchAll(/pid=(\d+)/g)].map(match => Number(match[1]));
   if (!process || !pids.length || pids.some(pid => pid !== process.pid)) throw new Error('Porta ocupada por outro serviço; deploy interrompido.');
 }
+export class ProductionEnvironmentError extends Error {
+  constructor(fields) { super('Configuração de produção inválida.'); this.fields = fields; }
+}
+export function invalidProductionFields(env) {
+  // Só nomes definidos pelo aplicativo podem sair no diagnóstico, nunca valores do arquivo.
+  return [
+    ['NODE_ENV', env.NODE_ENV === 'production'],
+    ['CLIENT_ORIGIN', env.CLIENT_ORIGIN === `https://${settings.domain}`],
+    ['MONGODB_URI', Boolean(env.MONGODB_URI)],
+    ['PORT', !env.PORT || env.PORT === String(settings.port)],
+    ['HOST', !env.HOST || env.HOST === '127.0.0.1'],
+  ].filter(([, valid]) => !valid).map(([field]) => field);
+}
 export function releaseConfig(release, name, releaseId) {
   const environment = { NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(settings.port), DEPLOY_RELEASE_ID: releaseId };
   if (settings.kind === 'server') {
     const env = parseEnv(readFileSync(`${release}/.env`, 'utf8'));
     // Recusa um .env de desenvolvimento antes de parar a versão em execução.
-    if (env.NODE_ENV !== 'production' || env.CLIENT_ORIGIN !== `https://${settings.domain}` ||
-        !env.MONGODB_URI || (env.PORT && env.PORT !== String(settings.port)) ||
-        (env.HOST && env.HOST !== '127.0.0.1')) throw new Error('APP_ENV_FILE não corresponde ao ambiente de produção documentado.');
+    const invalid = invalidProductionFields(env);
+    if (invalid.length) throw new ProductionEnvironmentError(invalid);
   }
   return { apps: [{ name, script: `${release}/${settings.kind === 'server' ? 'dist/main.js' : 'serve-frontend.mjs'}`,
     cwd: release, interpreter: process.execPath, exec_mode: 'fork', instances: 1,
@@ -92,8 +104,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const body = JSON.parse(readFileSync(0, 'utf8'));
       if (body.releaseId !== a) process.exitCode = 1;
     } else throw new Error('Modo inválido.');
-  } catch {
+  } catch (error) {
+    if (error instanceof ProductionEnvironmentError) {
+      console.error(`[nextplay] APP_ENV_FILE: campos inválidos: ${error.fields.join(', ')}.`); process.exitCode = 1;
+    } else {
     // Snapshots e configuração contêm dados privados; nunca imprimir a causa bruta.
     console.error('[nextplay] Falha na configuração, porta ou validação do deploy. Confira a documentação.'); process.exitCode = 1;
+    }
   }
 }
