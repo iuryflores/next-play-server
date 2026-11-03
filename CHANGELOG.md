@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/iuryflores/next-play-server/compare/v0.10.0...v0.11.0) (2026-11-02)
+
+
+### Features
+
+* adiciona perfis sociais e listas compartilhadas ([79d0878](https://github.com/iuryflores/next-play-server/commit/79d08787ecd87228b6fd3ec02be85ff4ead260d4))
+
 ## [0.10.0](https://github.com/iuryflores/next-play-server/compare/v0.9.0...v0.10.0) (2026-11-02)
 
 
