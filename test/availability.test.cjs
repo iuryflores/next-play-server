@@ -1,0 +1,29 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');const {randomUUID}=require('node:crypto');
+require('reflect-metadata');const database='np_availability_'+randomUUID().replaceAll('-','');
+process.env.MONGODB_URI='mongodb://127.0.0.1:27017/'+database;process.env.NODE_ENV='test';process.env.CLIENT_ORIGIN='http://localhost:5174';process.env.ALLOW_REGISTRATION='true';process.env.EMAIL_VERIFICATION_REQUIRED='false';process.env.SWAGGER_ENABLED='true';
+const {CatalogService}=require('../dist/catalog/catalog.module');const {storeLink,tmdbWatchLink}=require('../dist/catalog/availability');
+function fixture(){const saved=new Map();const service=new CatalogService({collection:name=>{assert.equal(name,'catalog_availability');return{findOne:async q=>saved.get(q._id),updateOne:async(q,u)=>saved.set(q._id,{...q,...u.$set})};}});return {service,saved};}
+test('onde assistir separa país/modalidade, reutiliza consultas concorrentes e preserva atribuição da fonte',async()=>{
+  const {service,saved}=fixture();let calls=0;service.tmdb=async path=>{calls++;assert.equal(path,'movie/42/watch/providers');return {results:{BR:{link:'https://www.themoviedb.org/movie/42-title/watch?locale=BR',flatrate:[{provider_id:1,provider_name:'Serviço',logo_path:'/logo.png'},{provider_id:1,provider_name:'Serviço'}],rent:[{provider_id:2,provider_name:'Aluguel'}]},US:{free:[{provider_id:3,provider_name:'Gratuito'}]}}};};
+  const [a,b]=await Promise.all([service.availability('tmdb:movie:42'),service.availability('tmdb:movie:42')]);assert.equal(calls,1);assert.deepEqual(a,b);assert.equal(a.country,'BR');assert.equal(a.source,'tmdb-justwatch');assert.equal(a.groups[0].providers.length,1);assert.equal(a.groups[1].type,'rent');assert.equal(a.groups[0].providers[0].logo,'https://image.tmdb.org/t/p/w92/logo.png');assert.ok(a.link.includes('/watch'));
+  const us=await service.availability('tmdb:movie:42','US');assert.equal(calls,2);assert.equal(us.groups[0].type,'free');assert.ok(saved.get('tmdb:movie:42:BR').expires>Date.now());
+});
+test('ausência regional é diferente de falha e resposta malformada não vira cache negativo',async()=>{
+  const {service,saved}=fixture();service.tmdb=async path=>{assert.equal(path,'tv/3/watch/providers');return{results:{}};};const result=await service.availability('tmdb:series:3','PT');assert.deepEqual(result.groups,[]);assert.equal(result.link,null);assert.ok(saved.get('tmdb:series:3:PT').expires<Date.now()+2*3600000);
+  saved.get('tmdb:series:3:PT').expires=new Date(0);service.tmdb=async()=>{throw Error('provider down');};await assert.rejects(service.availability('tmdb:series:3','PT'),/provider down/);assert.equal(saved.get('tmdb:series:3:PT').expires.getTime(),0);
+  for(const payload of [{results:[]},{results:{PT:{rent:{}}}},{results:{PT:{buy:[null]}}}]){service.tmdb=async()=>payload;await assert.rejects(service.availability('tmdb:series:3','PT'));}
+  await assert.rejects(service.availability('tmdb:series:3','pt'));await assert.rejects(service.availability('https://example.test','BR'));
+});
+test('onde jogar informa plataformas/lojas e exclui links inseguros sem inventar assinaturas',async()=>{
+  const {service}=fixture();let calls=0;service.igdb=async body=>{calls++;assert.match(body,/platforms.name,websites.url/);return[{id:7,platforms:[{name:'PC'},{name:'PlayStation 5'},{name:'PC'}],websites:[{url:'https://store.steampowered.com/app/7/Game'},{url:'https://store.steampowered.com/app/7/Game'},{url:'https://www.gog.com/en/game/game'},{url:'javascript:alert(1)'},{url:'https://store.steampowered.com.evil.test/app/7'},{url:'https://discord.com/x'}]}];};
+  const result=await service.availability('igdb:game:7');assert.equal(result.source,'igdb');assert.equal(result.country,null);assert.deepEqual(result.platforms,['PC','PlayStation 5']);assert.deepEqual(result.stores.map(row=>row.name),['Steam','GOG']);assert.deepEqual(result.groups,[]);await service.availability('igdb:game:7','US');assert.equal(calls,1);
+  for(const raw of ['javascript:alert(1)','https://user:pass@store.steampowered.com/app/1','https://store.steampowered.com:8443/app/1','https://example.test/game'])assert.equal(storeLink(raw),null);
+  assert.equal(tmdbWatchLink('https://evil.test/movie/1/watch'),null);assert.equal(tmdbWatchLink('https://www.themoviedb.org.evil.test/movie/1/watch'),null);
+});
+test('consulta autenticada valida referência/país e não exige adicionar o título à biblioteca',async t=>{
+  const {createApp}=require('../dist/bootstrap');const {getConnectionToken}=require('@nestjs/mongoose');const app=await createApp();await app.listen(0,'127.0.0.1');const base=await app.getUrl(),db=app.get(getConnectionToken());t.after(async()=>{try{assert.match(database,/^np_availability_[a-f0-9]{32}$/);assert.equal(db.name,database);await db.dropDatabase();}finally{await app.close();}});
+  const path='/api/catalog/availability?catalogId=tmdb:movie:42';assert.equal((await fetch(base+path)).status,401);
+  const reg=await fetch(base+'/api/auth/register',{method:'POST',headers:{origin:process.env.CLIENT_ORIGIN,'Content-Type':'application/json'},body:JSON.stringify({email:'viewer@example.test',password:'Long-test-password-123!'})});assert.equal(reg.status,201);const cookie=reg.headers.get('set-cookie').split(';')[0];const service=app.get(CatalogService);let calls=0;service.availability=async(id,country='BR')=>{calls++;return{source:'tmdb-justwatch',country,groups:[],platforms:[],stores:[],link:null,checkedAt:new Date().toISOString()};};
+  for(const suffix of ['&country=br','&country=USA','&country=BR&unknown=x'])assert.equal((await fetch(base+path+suffix,{headers:{cookie}})).status,400);
+  const response=await fetch(base+path+'&country=PT',{headers:{cookie}});assert.equal(response.status,200);assert.equal((await response.json()).country,'PT');assert.equal(calls,1);assert.equal(await db.collection('library_items').countDocuments(),0);
+});

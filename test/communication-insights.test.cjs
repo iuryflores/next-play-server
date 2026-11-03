@@ -317,6 +317,30 @@ test("perfil, seguidores, comparação consentida, compartilhamento e fóruns/vo
   assert.ok(insights.allTimeFavorites.length > 0);
   assert.equal((await call("/insights/history?before=bad", "GET", a)).status, 400);
   const ownCompleted = (await json("/library", a)).items.find((item) => item.title === "Em comum");
+  const favoritePath='/social/favorites/'+ownCompleted.id;
+  assert.equal((await call(favoritePath,'PATCH',null,{favorite:true})).status,401);
+  assert.equal((await call(favoritePath,'PATCH',b,{favorite:true})).status,404);
+  assert.equal((await call(favoritePath,'PATCH',a,{favorite:'yes'})).status,400);
+  assert.equal((await call(favoritePath,'PATCH',a,{favorite:true},'https://evil.example')).status,403);
+  // Preferência independe de conclusão e deve aparecer tanto na seleção quanto no perfil.
+  const activeFavorite=await add(a,'Favorito em andamento',{status:'active'});
+  assert.equal((await call('/social/favorites/'+activeFavorite.id,'PATCH',a,{favorite:true})).status,200);
+  assert.ok((await json('/social/profiles/'+a.id,a)).favorites.some(item=>item.viewerItemId===activeFavorite.id));
+  assert.equal((await call('/social/settings','PATCH',a,{favoriteIds:[activeFavorite.id]})).status,200);
+  await call('/library/'+activeFavorite.id+'/archive','POST',a,{archived:true});
+  assert.equal((await call('/social/favorites/'+activeFavorite.id,'PATCH',a,{favorite:true})).status,400);
+  assert.equal((await call('/social/favorites/'+activeFavorite.id,'PATCH',a,{favorite:false})).status,200);
+  for(let i=0;i<2;i++)assert.equal((await call('/social/favorites/'+ownCompleted.id.toUpperCase(),'PATCH',a,{favorite:true})).status,200);
+  assert.deepEqual((await json('/social/settings',a)).favoriteIds,[ownCompleted.id]);
+  await call('/library/'+ownCompleted.id+'/archive','POST',a,{archived:true});
+  assert.equal((await call(favoritePath,'PATCH',a,{favorite:false})).status,200);
+  assert.deepEqual((await json('/social/settings',a)).favoriteIds,[]);
+  await call('/library/'+ownCompleted.id+'/archive','POST',a,{archived:false});
+  const selections=[];for(let i=0;i<11;i++)selections.push(await add(a,'Favorito '+i,{status:'completed',completedOn:'2020-01-01'}));
+  for(const item of selections.slice(0,9))assert.equal((await call('/social/favorites/'+item.id,'PATCH',a,{favorite:true})).status,200);
+  const simultaneous=await Promise.all(selections.slice(9).map(item=>call('/social/favorites/'+item.id,'PATCH',a,{favorite:true})));
+  assert.deepEqual(simultaneous.map(response=>response.status).sort(),[200,400]);
+  const savedFavorites=await json('/social/settings',a);assert.equal(savedFavorites.favoriteIds.length,10);assert.deepEqual(savedFavorites.favoriteIds.slice(0,9),selections.slice(0,9).map(item=>item.id));assert.equal(savedFavorites.bio,'Cinema e livros');
   assert.equal(
     (
       await call("/insights/annotations/" + ownCompleted.id, "POST", b, {

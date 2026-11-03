@@ -28,6 +28,7 @@ export async function createApp() {
   app.use('/api/auth/profile', express.json({ limit: '110kb' }));
   // Fotos de objetos são comprimidas pelo cliente; os demais endpoints mantêm o limite pequeno.
   app.use('/api/collector/copies', express.json({ limit: '650kb' }));
+  app.use('/api/game-imports/file', express.json({ limit: '100kb' }));
   app.use(express.json({ limit: '8kb' }));
   app.use((_request: Request, response: Response, next: NextFunction) => { response.setHeader('Cache-Control', 'no-store'); next(); });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));

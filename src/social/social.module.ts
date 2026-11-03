@@ -36,11 +36,12 @@ class SocialSettingsDto {
   @ValidateIf((_o, v) => v !== undefined) @IsBoolean() shareActivity?: boolean;
   @ApiProperty({ required: false, type: Boolean, description: 'Padrão true: receber avisos de conclusões de amigos que compartilham atividades e de títulos já presentes no backlog naquele momento.' })
   @ValidateIf((_o, v) => v !== undefined) @IsBoolean() backlogAlerts?: boolean;
-  @ApiProperty({ required: false, type: [String], maxItems: 10, description: 'Até dez IDs distintos de títulos próprios, concluídos e não arquivados, na ordem desejada. Não inclui acervo possuído nem episódios.' })
+  @ApiProperty({ required: false, type: [String], maxItems: 10, description: 'Até dez IDs distintos de títulos próprios não arquivados, na ordem desejada. Não inclui acervo possuído nem episódios.' })
   @Transform(({ value }) => Array.isArray(value) ? value.map(id => typeof id === 'string' ? id.toLowerCase() : id) : value)
   @ValidateIf((_o, v) => v !== undefined) @IsArray() @ArrayMaxSize(10) @ArrayUnique() @Matches(/^[a-f0-9]{24}$/, { each: true }) favoriteIds?: string[];
 }
 class FollowDto { @ApiProperty({ type: Boolean }) @IsBoolean() following!: boolean; }
+class FavoriteDto { @ApiProperty({type:Boolean,description:'Estado desejado. Adicionar exige título próprio não arquivado; até dez favoritos. Remover sempre permite limpar a própria seleção.'}) @IsBoolean() favorite!:boolean; }
 @Injectable()
 export class SocialService implements OnModuleInit {
   constructor(@InjectConnection() private readonly connection: Connection, private readonly avatars: AvatarStorage, private readonly progression: ProgressionService) {}
@@ -60,8 +61,8 @@ export class SocialService implements OnModuleInit {
   async save(owner: string, dto: SocialSettingsDto) {
     const ownerId = this.id(owner);
     if (dto.favoriteIds?.length) {
-      const picked = await this.connection.collection('library_items').find({ _id: { $in: dto.favoriteIds.map(id => this.id(id)) }, ownerId, status: 'completed', archived: { $ne: true } }, { projection: { catalogKey: 1 } }).toArray();
-      if (picked.length !== dto.favoriteIds.length || new Set(picked.map(row => row.catalogKey || row._id.toString())).size !== dto.favoriteIds.length) throw new BadRequestException('Escolha até dez títulos seus, concluídos e não arquivados.');
+      const picked = await this.connection.collection('library_items').find({ _id: { $in: dto.favoriteIds.map(id => this.id(id)) }, ownerId, archived: { $ne: true } }, { projection: { catalogKey: 1 } }).toArray();
+      if (picked.length !== dto.favoriteIds.length || new Set(picked.map(row => row.catalogKey || row._id.toString())).size !== dto.favoriteIds.length) throw new BadRequestException('Escolha até dez títulos seus não arquivados.');
     }
     const previous = await this.settings(owner);
     // Campos ausentes não podem virar null e apagar escolhas de outra atualização.
@@ -88,7 +89,7 @@ export class SocialService implements OnModuleInit {
     const distinct = [{ $match: base }, { $sort: { updatedAt: -1, _id: -1 } }, { $group: { _id: { $ifNull: ['$catalogKey', { $toString: '$_id' }] }, item: { $first: '$$ROOT' } } }, { $replaceRoot: { newRoot: '$item' } }];
     const rows = await this.connection.collection('library_items').aggregate([...distinct, ...(before ? [{ $match: { _id: { $lt: this.id(before) } } }] : []), { $sort: { _id: -1 } }, { $limit: 31 }]).toArray();
     const count = await this.connection.collection('library_items').aggregate([...distinct, { $count: 'count' }]).toArray();
-    const favorites = setting.favoriteIds.length ? await this.connection.collection('library_items').find({ ...base, _id: { $in: setting.favoriteIds.map(id => this.id(id)) } }).toArray() : [];
+    const favorites = setting.favoriteIds.length ? await this.connection.collection('library_items').find({ ownerId, archived: { $ne: true }, _id: { $in: setting.favoriteIds.map(id => this.id(id)) } }).toArray() : [];
     const ordered = setting.favoriteIds.map(id => favorites.find(row => row._id.toString() === id)).filter(row => row !== undefined);
     const selected = await this.connection.collection('achievement_profiles').findOne({ ownerId });
     const award = selected?.selectedId ? await this.connection.collection('achievement_awards').findOne({ ownerId, key: selected.selectedId }) : null;
@@ -113,6 +114,25 @@ export class SocialService implements OnModuleInit {
     if(!item)throw new NotFoundException('Título não disponível.');
     const user=await this.connection.collection('users').findOne({_id:row.ownerId},{projection:{displayName:1}});
     return {ownerName:user?.displayName||'Player',title:(await this.titles(viewer,[item]))[0]};
+  }
+  async favorite(owner:string,id:string,favorite:boolean){
+    const ownerId=this.id(owner),itemId=this.id(id);
+    id=itemId.toString();
+    const item=await this.connection.collection('library_items').findOne({_id:itemId,ownerId});
+    if(!item)throw new NotFoundException('Título não encontrado.');
+    if(!favorite){await this.connection.collection<SocialSettings>('social_profiles').updateOne({_id:ownerId},{$pull:{favoriteIds:id}});return{favorite:false};}
+    // Favoritar expressa preferência, independentemente de ter concluído o consumo.
+    if(item.archived)throw new BadRequestException('Restaure o título antes de adicioná-lo aos favoritos do perfil.');
+    const current=await this.settings(owner);
+    if(current.favoriteIds.includes(id))return{favorite:true};
+    const duplicates=typeof item.catalogKey==='string'?await this.connection.collection('library_items').find({ownerId,catalogKey:item.catalogKey,_id:{$ne:itemId}},{projection:{_id:1}}).toArray():[];
+    const duplicateIds=duplicates.map(row=>row._id.toString());
+    if(current.favoriteIds.some(value=>duplicateIds.includes(value)))throw new BadRequestException('Esta obra já está nos favoritos do perfil.');
+    try{await this.connection.collection<SocialSettings>('social_profiles').updateOne({_id:ownerId},{$setOnInsert:{favoriteIds:[]}},{upsert:true});}catch(error){if((error as {code?:number}).code!==11000)throw error;}
+    // A inclusão e o limite são atômicos; clicar em títulos diferentes em duas abas não perde favoritos.
+    const result=await this.connection.collection<SocialSettings>('social_profiles').updateOne({_id:ownerId,favoriteIds:{$nin:duplicateIds},$expr:{$lt:[{$size:{$ifNull:['$favoriteIds',[]]}},10]}},{$addToSet:{favoriteIds:id}});
+    if(!result.matchedCount){const latest=await this.settings(owner);if(!latest.favoriteIds.includes(id))throw new BadRequestException(latest.favoriteIds.some(value=>duplicateIds.includes(value))?'Esta obra já está nos favoritos do perfil.':'Você já tem dez favoritos. Remova um no perfil para adicionar outro.');}
+    return{favorite:true};
   }
   async discover(viewer: string, query = '') {
     if (typeof query !== 'string' || query.length > 100) throw new BadRequestException('Busca inválida.');
@@ -169,13 +189,15 @@ class SocialController {
   async shared(@Req()req:Request,@Param('id')id:string){return this.service.shared(await this.owner(req),id);}
   @Get('discover') @ApiQuery({ name: 'q', required: false }) @ApiOperation({ summary: 'Descobrir até 50 perfis públicos', description: 'Somente contas que publicaram perfil. Busca literal pelo nome; crítico é autodeclaração, sem verificação.' })
   async discover(@Req() request: Request, @Query('q') query?: string) { return this.service.discover(await this.owner(request), query); }
+  @Patch('favorites/:id') @ApiOperation({summary:'Adicionar/remover favorito pelos detalhes do título',description:'Idempotente, preserva outros favoritos e configurações. Inclusão atômica no final da seleção, até dez; exige item próprio não arquivado. Remoção permite limpar item que mudou de status/foi arquivado. Não publica o perfil nem altera avaliação/status de consumo.'})
+  async favorite(@Req()req:Request,@Param('id')id:string,@Body()dto:FavoriteDto){return this.service.favorite(await this.owner(req),id,dto.favorite);}
   @Patch('profiles/:id/follow') @ApiOperation({ summary: 'Seguir ou deixar de seguir perfil público', description: 'Idempotente, independente de amizade. Receber atividades exige a opção específica do autor para seguidores; não dá acesso a notas, listas privadas ou notificações de backlog.' })
   async follow(@Req() request: Request, @Param('id') id: string, @Body() dto: FollowDto) { return this.service.follow(await this.owner(request), id, dto.following); }
   @Get('profiles/:id/compare') @ApiOperation({ summary: 'Comparar gosto com amigo', description: 'Exige amizade aceita e shareComparison habilitado nas duas contas. Retorna somente contagens e percentuais agregados; sem notas individuais. ratingAgreement: 100*(1-média das diferenças absolutas/4), null sem notas em comum; genreOverlap é Jaccard entre gêneros consumidos.' })
   async compare(@Req() request: Request, @Param('id') id: string) { return this.service.compare(await this.owner(request), id); }
   @Get('settings') @ApiOperation({ summary: 'Consultar opções sociais privadas', description: 'Padrões: perfil privado, atividades não compartilhadas e alertas de backlog habilitados. Favoritos são privados até publicar o perfil.' })
   settings(@Req() request: Request) { return this.owner(request).then(owner => this.service.settings(owner)); }
-  @Patch('settings') @ApiOperation({ summary: 'Alterar compartilhamento e Top 10', description: 'Atualização parcial persistida no MongoDB. Campos ausentes preservados. Publicar perfil e compartilhar atividades são escolhas independentes. Somente títulos próprios concluídos e não arquivados podem entrar no Top 10.' })
+  @Patch('settings') @ApiOperation({ summary: 'Alterar compartilhamento e Top 10', description: 'Atualização parcial persistida no MongoDB. Campos ausentes preservados. Publicar perfil e compartilhar atividades são escolhas independentes. Somente títulos próprios não arquivados podem entrar no Top 10.' })
   async save(@Req() request: Request, @Body() dto: SocialSettingsDto) { return this.service.save(await this.owner(request), dto); }
   @Get('feed') @ApiOperation({ summary: 'Atividades novas dos amigos aceitos', description: 'Até 30 eventos por página: added, started, completed. Apenas ações registradas após habilitar compartilhamento e aceitar amizade. recordedAt é data de registro, não data real de consumo/importação. Arquivamento, exclusão, desativação do compartilhamento ou remoção da amizade ocultam eventos. Não retorna notas ou avaliações individuais.' })
   @ApiQuery({ name: 'before', required: false, type: String, description: 'nextBefore da página anterior.' })

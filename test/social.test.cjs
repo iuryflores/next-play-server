@@ -40,7 +40,9 @@ test('média anônima, feed consentido, perfil/Top 4 e alertas de backlog preser
   assert.equal((await json('/social/profiles/' + a.id, a)).published, false);
   const book = await add(a, 'Livro favorito', { kind: 'book', status: 'completed', completedOn: '2020-01-01' });
   const foreign = await add(c, 'Favorito de outra pessoa', { status: 'completed' });
-  for (const favoriteIds of [[foreign.id], [empty.id], [rated.id, rated.id]]) assert.equal((await call('/social/settings', 'PATCH', a, { favoriteIds })).status, 400);
+  for (const favoriteIds of [[foreign.id], [rated.id, rated.id]]) assert.equal((await call('/social/settings', 'PATCH', a, { favoriteIds })).status, 400);
+  // Favoritar não exige conclusão; propriedade e duplicidade continuam obrigatórias.
+  assert.equal((await call('/social/settings', 'PATCH', a, { favoriteIds: [empty.id] })).status, 200);
   await settings(a, { publicProfile: true, favoriteIds: [book.id, rated.id] });
   let profile = await json('/social/profiles/' + a.id, c); assert.deepEqual(profile.favorites.map(row => row.title), ['Livro favorito', 'Avaliação compartilhada']); assert.equal(profile.totalCompleted, 2); assert.equal(profile.completed.some(row => row.title === empty.title), false); assert.equal(profile.completed.every(row => row.viewerItemId === null), true);
   for (const secret of ['PRIVATE NOTE', '@example.test', 'notes', 'stars', rated.id, book.id, 'playtimeMinutes', 'gameSessions']) assert.equal(JSON.stringify(profile).includes(secret), false);

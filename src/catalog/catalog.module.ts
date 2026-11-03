@@ -1,5 +1,6 @@
 import { ApiTags, ApiCookieAuth, ApiProperty, ApiOperation, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
-import { IsString, Matches } from 'class-validator';
+import { IsString, Matches, ValidateIf } from 'class-validator';
+import {storeLink,tmdbWatchLink} from './availability';
 import { BadGatewayException, BadRequestException, Controller, Get, HttpException, Injectable, Module, Query, Req, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -18,6 +19,10 @@ class CatalogDetailsQuery {
   @ApiProperty({ example: 'tmdb:movie:11', pattern: '^(tmdb:(movie|series)|igdb:game):[1-9][0-9]{0,14}$', description: 'Referência pública de filme, série ou jogo; não aceita URLs nem IDs de itens privados.' })
   @IsString() @Matches(/^(tmdb:(movie|series)|igdb:game):[1-9]\d{0,14}$/) catalogId!: string;
 }
+class AvailabilityQuery extends CatalogDetailsQuery {
+  @ApiProperty({required:false,default:'BR',pattern:'^[A-Z]{2}$',description:'País ISO de duas letras maiúsculas para filmes/séries. Jogos retornam plataformas/lojas, sem confirmação regional ou de assinatura.'})
+  @ValidateIf((_o,value)=>value!==undefined) @IsString() @Matches(/^[A-Z]{2}$/) country?:string;
+}
 export class GameEstimateDto {
   @ApiProperty({ type: Boolean, description: 'Vínculo IGDB válido. Sem vínculo, os tempos ficam nulos.' }) supported!: boolean;
   @ApiProperty({ enum: ['igdb'] }) source!: 'igdb';
@@ -28,6 +33,45 @@ export class GameEstimateDto {
 }
 @Injectable()
 export class CatalogService {
+  private availabilityPending=new Map<string,Promise<any>>();
+  async availability(catalogId:string,country='BR'){
+    if(!/^(tmdb:(movie|series)|igdb:game):[1-9]\d{0,14}$/.test(catalogId)||!/^[A-Z]{2}$/.test(country))throw new BadRequestException('Título ou país inválido.');
+    const game=catalogId.startsWith('igdb:'),key=catalogId+(game?'':':'+country);
+    const cache=this.connection.collection<{_id:string;value:any;expires:Date}>('catalog_availability');
+    const saved=await cache.findOne({_id:key});
+    if(saved&&saved.expires>new Date())return saved.value;
+    const pending=this.availabilityPending.get(key);if(pending)return pending;
+    const work=(async()=>{
+      let value;
+      if(game){
+        const id=Number(catalogId.split(':')[2]);
+        const rows=await this.igdb<{id:number;platforms?:{name:string}[];websites?:{url:string}[]}[]>('fields platforms.name,websites.url; where id = '+id+'; limit 1;');
+        if(!Array.isArray(rows)||rows.length!==1||rows[0]?.id!==id||rows[0].platforms!==undefined&&!Array.isArray(rows[0].platforms)||rows[0].websites!==undefined&&!Array.isArray(rows[0].websites))throw new BadGatewayException('Resposta inválida da disponibilidade IGDB.');
+        if((rows[0].platforms||[]).some(row=>!row||typeof row.name!=='string'||!row.name.trim())||(rows[0].websites||[]).some(row=>!row||typeof row.url!=='string'))throw new BadGatewayException('Metadados inválidos da disponibilidade IGDB.');
+        const platforms=[...new Set((rows[0].platforms||[]).filter(row=>typeof row.name==='string'&&row.name.trim()).map(row=>row.name.trim().slice(0,120)))].slice(0,40);
+        const stores=[...new Map((rows[0].websites||[]).map(row=>storeLink(row.url)).filter(row=>row!==null).map(row=>[row.url,row])).values()].slice(0,40);
+        value={kind:'game',source:'igdb',country:null,platforms,stores,groups:[],link:null,checkedAt:new Date().toISOString()};
+      }else{
+        const [,kind,id]=catalogId.split(':');
+        const data=await this.tmdb<{results:Record<string,{link?:string;flatrate?:any[];free?:any[];ads?:any[];rent?:any[];buy?:any[]}>}>((kind==='movie'?'movie/':'tv/')+id+'/watch/providers');
+        if(!data||!data.results||typeof data.results!=='object'||Array.isArray(data.results))throw new BadGatewayException('Resposta inválida da disponibilidade TMDB.');
+        const region=data.results[country];
+        if(region!==undefined&&(!region||typeof region!=='object'||Array.isArray(region)))throw new BadGatewayException('Região inválida no catálogo.');
+        const groups=['flatrate','free','ads','rent','buy'].map(type=>{
+          const providers=(region as any)?.[type];if(providers!==undefined&&!Array.isArray(providers))throw new BadGatewayException('Provedores inválidos no catálogo.');
+          if((providers||[]).some((provider:any)=>!provider||!Number.isSafeInteger(provider.provider_id)||provider.provider_id<1||typeof provider.provider_name!=='string'||!provider.provider_name.trim()))throw new BadGatewayException('Provedor inválido no catálogo.');
+          const unique=new Map<number,{id:number;name:string;logo:string}>();
+          for(const provider of providers||[]){const logo=/^\/[A-Za-z0-9_.-]+$/.test(provider.logo_path||'')?'https://image.tmdb.org/t/p/w92'+provider.logo_path:'';if(!unique.has(provider.provider_id)||!unique.get(provider.provider_id)!.logo&&logo)unique.set(provider.provider_id,{id:provider.provider_id,name:provider.provider_name.trim().slice(0,160),logo});}
+          return {type,providers:[...unique.values()]};
+        }).filter(group=>group.providers.length);
+        value={kind,source:'tmdb-justwatch',country,groups,link:tmdbWatchLink(region?.link),platforms:[],stores:[],checkedAt:new Date().toISOString()};
+      }
+      // Ausência tem validade curta; falha externa nunca é gravada como "não disponível".
+      const found=value.groups.length||value.stores.length||value.platforms.length;
+      await cache.updateOne({_id:key},{$set:{value,expires:new Date(Date.now()+(found?6:1)*3600000)}},{upsert:true});return value;
+    })().finally(()=>this.availabilityPending.delete(key));
+    this.availabilityPending.set(key,work);return work;
+  }
   async cachedGameParent(catalogId: string) {
     if (!/^igdb:game:[1-9]\d{0,14}$/.test(catalogId)) return undefined;
     const id = Number(catalogId.split(':')[2]);
@@ -459,6 +503,9 @@ export class CatalogService {
 class CatalogController {
   constructor(private readonly service: CatalogService, private readonly auth: AuthService) {}
   private async authorize(request: Request) { const raw: unknown = request.cookies?.[getConfig().cookieName]; return this.auth.me(typeof raw === 'string' ? raw : undefined); }
+  @Get('availability') @ApiOperation({summary:'Onde assistir ou jogar',description:'Exige sessão. TMDB/JustWatch: assinatura, gratuito, anúncios, aluguel e compra no país escolhido (BR padrão), com link TMDB, atribuição e checkedAt. IGDB: plataformas e links de lojas validados; não confirma estoque regional, preço ou inclusão em Game Pass/PS Plus. Cache público por título/país: seis horas com dados, uma sem dados. Falhas 502/503 não são ausência nem entram no cache; 429 limita consultas. Não cria itens nem usa bibliotecas privadas.'})
+  @ApiOkResponse({description:'kind, source (tmdb-justwatch/igdb), country (null para jogo), groups [{type,providers:[{id,name,logo}]}], platforms, stores [{name,url}], link ou null, checkedAt.'})
+  async availability(@Req()request:Request,@Query()query:AvailabilityQuery){const user=await this.authorize(request);this.service.limit(user.id);return this.service.availability(query.catalogId,query.country);}
   @Get('details')
   @ApiOperation({ summary: 'Consultar detalhes antes de adicionar ao acompanhamento', description: 'Retorna {title} com metadados públicos do TMDB/IGDB no idioma da sessão: sinopse, gêneros, capa, ano, lançamento e duração/produtoras/plataformas quando disponíveis. Não cria itens no acompanhamento nem exemplares na coleção. Livros e títulos manuais usam os metadados já disponíveis na tela.' })
   @ApiOkResponse({ description: 'Objeto title com catalogId, kind, title, originalTitle, year, coverUrl, overview, sourceUrl, genres e metadados opcionais do provedor.' })
