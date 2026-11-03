@@ -162,3 +162,7 @@ no frontend foram movidos para o repositório do servidor para permitir CI isola
 Confira cada deploy em GitHub Actions e pelo CommandId informado no SSM.
 Não repita um deploy com status incerto antes de conferir se o comando terminou.
 Não publique logs brutos do PM2 ou `.env`: podem conter credenciais de outros apps.
+
+### Rotten Tomatoes em produção
+
+As variáveis em `.env.rotten-tomatoes.local` são carregadas apenas no desenvolvimento e não entram no pacote publicado. Configure os secrets dedicados `ROTTEN_TOMATOES_ALGOLIA_APP_ID`, `ROTTEN_TOMATOES_ALGOLIA_API_KEY` e `ROTTEN_TOMATOES_ALGOLIA_INDEX` no environment `production` da API. O runner valida o conjunto, habilita a integração e substitui somente essas variáveis no `.env` remoto. Ausência de todos preserva o APP_ENV_FILE; conjunto parcial/inválido interrompe o deploy sem imprimir valores. A chave deve ser de busca apropriada à integração, nunca administrativa.
