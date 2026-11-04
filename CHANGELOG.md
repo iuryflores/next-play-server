@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/iuryflores/next-play-server/compare/v1.0.0...v1.1.0) (2026-11-04)
+
+
+### Features
+
+* otimiza leituras e amplia progresso e avaliacao de series ([9c6011e](https://github.com/iuryflores/next-play-server/commit/9c6011e32ac61d42ea52a671e22474570c1cc931))
+
 ## [1.0.0](https://github.com/iuryflores/next-play-server/compare/v0.11.0...v1.0.0) (2026-11-03)
 
 
