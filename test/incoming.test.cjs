@@ -23,8 +23,8 @@ test('incoming requires watched episodes and ownership, caches localized dates a
   await db.collection('episode_progress').insertOne({ itemId: id, season: 1, episode: 1, watchedAt: new Date() });
   let listed = await library.list(owner.toString()); assert.equal(listed[0].inProgress, false); assert.equal(listed[0].caughtUp, true); assert.equal(listed[0].status, 'active');
   await assert.rejects(() => library.upcoming(new Types.ObjectId().toString(), id.toString(), 'en-US'), error => error.getStatus() === 404);
-  let result = await upcoming(); assert.equal(result.episode.number, 2); assert.equal(result.episode.airDate, '2099-01-01'); assert.equal(result.stale, false); assert.equal(calls, 1);
-  await upcoming(); assert.equal(calls, 1);
+  let result = await upcoming(); assert.equal(result.episode.number, 2); assert.equal(result.episode.airDate, '2099-01-01'); assert.equal(result.stale, false); assert.equal(calls, 2);
+  await upcoming(); assert.equal(calls, 2);
   result = await library.upcoming(owner.toString(), id.toString(), 'pt-BR'); assert.equal(result.episode.name, 'Próximo'); assert.equal(calls, 2);
   const expire = () => db.collection('series_upcoming').updateMany({}, { $set: { expires: new Date(0) } });
   await expire(); failure = true; result = await upcoming(); assert.equal(result.stale, true); assert.equal(result.episode.number, 2);

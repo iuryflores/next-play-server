@@ -1,4 +1,4 @@
-import { ApiTags, ApiCookieAuth, ApiProperty, ApiOperation, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiQuery, ApiCookieAuth, ApiProperty, ApiOperation, ApiOkResponse, ApiResponse } from '@nestjs/swagger';
 import { IsString, Matches, ValidateIf } from 'class-validator';
 import {storeLink,tmdbWatchLink} from './availability';
 import { BadGatewayException, BadRequestException, Controller, Get, HttpException, Injectable, Module, Query, Req, ServiceUnavailableException } from '@nestjs/common';
@@ -400,6 +400,62 @@ export class CatalogService {
     const score = (item: CatalogTitle) => (item.genres || []).reduce((sum, name) => sum + (weights.get(normalize(name)) || 0), 0);
     return { results: unique.filter(item => !ownedIds.has(item.catalogId) && !ownedNames.has(normalize(item.title))).sort((a, b) => score(b) - score(a)), nextPage: totalPages === undefined ? results.length >= 20 && page < 500 ? page + 1 : null : page < totalPages ? page + 1 : null, ...(totalPages === undefined ? {} : {totalPages}) };
   }
+  async genres(kind: string, language = 'pt-BR') {
+    if (!['movie', 'series', 'game'].includes(kind)) throw new BadRequestException('Categoria inválida.');
+    const key = `${kind}:${language}`;
+    const stored = this.genreCache.get(key);
+    if (stored && stored.expires > Date.now()) return stored.values;
+    const data = kind === 'game'
+      ? await this.igdb<{ id: number; name: string }[]>('fields name; limit 100;', 'genres')
+      : (await this.tmdb<{ genres: { id: number; name: string }[] }>(`genre/${kind === 'movie' ? 'movie' : 'tv'}/list`, { language })).genres;
+    if (!Array.isArray(data)) throw new BadGatewayException('Resposta inválida do catálogo de gêneros.');
+    const values = data.filter(g => Number.isSafeInteger(g.id) && g.id > 0 && typeof g.name === 'string');
+    this.genreCache.set(key, { expires: Date.now() + 86400000, values });
+    return values;
+  }
+  async browse(kind: string, language: string, page = 1, genreText = '', company = '', query = '', platform?: number) {
+    if (!['movie', 'series', 'game'].includes(kind) || !Number.isInteger(page) || page < 1 || page > 500)
+      throw new BadRequestException('Categoria ou página inválida.');
+    if (typeof genreText !== 'string' || (genreText && !/^[1-9]\d{0,8}(,[1-9]\d{0,8}){0,7}$/.test(genreText)))
+      throw new BadRequestException('Escolha até oito gêneros válidos.');
+    if (typeof company !== 'string' || company.length > 100 || (company.trim().length === 1) || (kind === 'game' && company.trim()))
+      throw new BadRequestException('Informe uma produtora de filmes/séries entre 2 e 100 caracteres.');
+    if (typeof query !== 'string' || query.length > 100 || query.trim().length === 1)
+      throw new BadRequestException('Busca deve ter entre 2 e 100 caracteres.');
+    if (platform !== undefined && (kind !== 'game' || !Number.isSafeInteger(platform) || platform < 1)) throw new BadRequestException('Plataforma inválida.');
+    const directory = await this.genres(kind, language);
+    const ids = [...new Set(genreText ? genreText.split(',').map(Number) : [])];
+    if (ids.some(id => !directory.some(g => g.id === id))) throw new BadRequestException('Gênero inválido para esta categoria.');
+    const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+    let companyIds: number[] = [];
+    if (company.trim()) {
+      const data = await this.tmdb<{ results: { id: number; name: string }[] }>('search/company', { query: company.trim(), page: '1' });
+      if (!Array.isArray(data.results)) throw new BadGatewayException('Resposta inválida de produtoras.');
+      companyIds = data.results.filter(row => Number.isSafeInteger(row.id) && row.id > 0 && typeof row.name === 'string' && normalize(row.name).includes(normalize(company))).slice(0, 10).map(row => row.id);
+      // Uma produtora não encontrada não pode ampliar silenciosamente a consulta para todo o catálogo.
+      if (!companyIds.length) return { results: [], nextPage: null };
+    }
+    if (query.trim()) {
+      const data = await this.search(kind, query, language, page, platform);
+      // Busca textual não oferece os filtros de descoberta; confirma os metadados antes de incluir cada resultado.
+      const titles = ids.length || companyIds.length
+        ? await Promise.all(data.results.map(row => this.detail(row.catalogId, language))) : data.results;
+      const names = directory.filter(g => ids.includes(g.id)).map(g => normalize(g.name));
+      return { ...data, results: titles.filter(row => (!ids.length || row.genres?.some(g => names.includes(normalize(g)))) && (!companyIds.length || row.productionCompanies?.some(c => companyIds.includes(c.id)))) };
+    }
+    if (kind === 'game') {
+      const rows = await this.igdb(`fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation; where cover != null${ids.length ? ` & genres = (${ids.join(',')})` : ''}${platform ? ` & platforms = (${platform})` : ''}; sort rating desc; limit 21; offset ${(page - 1) * 20};`);
+      if (!Array.isArray(rows)) throw new BadGatewayException('Resposta inválida do catálogo.');
+      return { results: rows.slice(0, 20).filter(row => Number.isSafeInteger(row.id) && typeof row.name === 'string').map(row => this.game(row, language)), nextPage: rows.length > 20 && page < 500 ? page + 1 : null };
+    }
+    const data = await this.tmdb<{ results: (TmdbItem & { genre_ids?: number[] })[]; total_pages?: number }>(`discover/${kind === 'movie' ? 'movie' : 'tv'}`, {
+      language, page: String(page), include_adult: 'false', sort_by: 'popularity.desc',
+      ...(ids.length ? { with_genres: ids.join('|') } : {}),
+      ...(companyIds.length ? { with_companies: companyIds.join('|') } : {}),
+    });
+    if (!Array.isArray(data.results)) throw new BadGatewayException('Resposta inválida do catálogo.');
+    return { results: data.results.filter(row => Number.isSafeInteger(row.id) && !row.adult).map(row => this.movie({ ...row, genres: row.genres || directory.filter(g => row.genre_ids?.includes(g.id)) }, kind as 'movie' | 'series')), nextPage: page < Math.min(data.total_pages || 0, 500) ? page + 1 : null };
+  }
   private searchCache = new Map<string, { expires: number; value: { results: CatalogTitle[]; nextPage: number | null } }>();
   async search(kind: string, query: string, language = 'pt-BR', page = 1, platform?: number) {
     if (platform !== undefined && (kind !== 'game' || !Number.isSafeInteger(platform) || platform < 1)) throw new BadRequestException('Plataforma inválida.');
@@ -441,17 +497,17 @@ export class CatalogService {
   }
   async upcoming(catalogId: string, language: string) {
     if (!/^tmdb:series:[1-9]\d{0,14}$/.test(catalogId)) return { episode: null, ended: false, unsupported: true, stale: false };
-    type Upcoming = { episode: { season: number; number: number; name: string; airDate: string } | null; ended: boolean };
+    type Upcoming = { episode: { season: number; number: number; name: string; airDate: string } | null; ended: boolean; seriesStatus?: 'ended' | 'canceled' | 'returning' | 'unknown'; episodeCount?: number };
     const collection = this.connection.collection<{ _id: string; value: Upcoming; expires: Date }>('series_upcoming');
     const key = catalogId + ':' + language;
     const cached = await collection.findOne({ _id: key });
     const today = new Date().toISOString().slice(0, 10);
     const current = (value: Upcoming) => ({ ...value, episode: value.episode && value.episode.airDate >= today ? value.episode : null });
-    if (cached && cached.expires > new Date()) return { ...current(cached.value), stale: false, unsupported: false };
+    if (cached?.value.seriesStatus && cached.expires > new Date()) return { ...current(cached.value), stale: false, unsupported: false };
     try {
-      const data = await this.tmdb<{ status: string; next_episode_to_air?: { season_number: number; episode_number: number; name: string; air_date: string } | null }>('tv/' + catalogId.split(':')[2], { language });
+      const data = await this.tmdb<{ status: string; number_of_episodes?: number; next_episode_to_air?: { season_number: number; episode_number: number; name: string; air_date: string } | null }>('tv/' + catalogId.split(':')[2], { language });
       const next = data.next_episode_to_air;
-      const value: Upcoming = { ended: ['Ended', 'Canceled'].includes(data.status), episode: next && Number.isInteger(next.season_number) && next.season_number > 0 && Number.isInteger(next.episode_number) && next.episode_number > 0 && /^\d{4}-\d{2}-\d{2}$/.test(next.air_date || '') ? { season: next.season_number, number: next.episode_number, name: String(next.name || '').slice(0, 200), airDate: next.air_date } : null };
+      const value: Upcoming = { seriesStatus: data.status === 'Ended' ? 'ended' : data.status === 'Canceled' ? 'canceled' : ['Returning Series', 'In Production', 'Planned', 'Pilot'].includes(data.status) ? 'returning' : 'unknown', episodeCount: Number.isInteger(data.number_of_episodes) && data.number_of_episodes! > 0 ? data.number_of_episodes : undefined, ended: ['Ended', 'Canceled'].includes(data.status), episode: next && Number.isInteger(next.season_number) && next.season_number > 0 && Number.isInteger(next.episode_number) && next.episode_number > 0 && /^\d{4}-\d{2}-\d{2}$/.test(next.air_date || '') ? { season: next.season_number, number: next.episode_number, name: String(next.name || '').slice(0, 200), airDate: next.air_date } : null };
       await collection.updateOne({ _id: key }, { $set: { value, expires: new Date(Date.now() + 6 * 3600000) } }, { upsert: true });
       return { ...current(value), stale: false, unsupported: false };
     } catch (error) { if (cached) return { ...current(cached.value), stale: true, unsupported: false }; throw error; }
@@ -555,6 +611,37 @@ class CatalogController {
     const user = await this.authorize(request);
     this.service.limit(user.id);
     return {cast:await this.service.cast(query.catalogId,user.language),supported:query.catalogId.startsWith('tmdb:')};
+  }
+  @Get('genres')
+  @ApiOperation({ summary: 'Listar gêneros do catálogo por categoria e idioma da sessão' })
+  @ApiQuery({ name: 'kind', enum: ['movie', 'series', 'game'] })
+  @ApiOkResponse({ description: 'Objeto genres com lista de {id, name}; IDs são específicos do provedor e da categoria.' })
+  @ApiResponse({ status: 400, description: 'Categoria inválida.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas excedido.' })
+  @ApiResponse({ status: 502, description: 'Resposta inválida do provedor.' })
+  @ApiResponse({ status: 503, description: 'Provedor não configurado.' })
+  async genres(@Req() request: Request, @Query('kind') kind: string) {
+    const user = await this.authorize(request); this.service.limit(user.id);
+    return { genres: await this.service.genres(kind, user.language) };
+  }
+  @Get('browse')
+  @ApiOperation({ summary: 'Filtrar títulos por gêneros e produtora', description: 'Gêneros são combinados por OU; produtora, plataforma e busca textual são combinadas por E. Na busca textual os resultados da página são conferidos pelos metadados, e uma página vazia pode ter nextPage. Não altera o acompanhamento.' })
+  @ApiQuery({ name: 'kind', enum: ['movie', 'series', 'game'] })
+  @ApiQuery({ name: 'genres', required: false, description: 'Até 8 IDs positivos da lista /genres da categoria, separados por vírgula.' })
+  @ApiQuery({ name: 'company', required: false, minLength: 2, maxLength: 100, description: 'Nome de produtora, somente filmes/séries; encontra empresas cujo nome contém o texto.' })
+  @ApiQuery({ name: 'q', required: false, minLength: 2, maxLength: 100 })
+  @ApiQuery({ name: 'page', required: false, type: Number, minimum: 1, maximum: 500 })
+  @ApiQuery({ name: 'platform', required: false, type: Number, minimum: 1, description: 'ID positivo IGDB, somente jogos.' })
+  @ApiOkResponse({ description: 'results e nextPage (número ou null). Produtora inexistente retorna lista vazia.' })
+  @ApiResponse({ status: 400, description: 'Parâmetros inválidos, gênero fora da categoria ou produtora para jogos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas excedido.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do provedor.' })
+  @ApiResponse({ status: 503, description: 'Provedor não configurado.' })
+  async browse(@Req() request: Request, @Query('kind') kind: string, @Query('page') page?: string, @Query('genres') genres?: string, @Query('company') company?: string, @Query('q') query?: string, @Query('platform') platform?: string) {
+    const user = await this.authorize(request); this.service.limit(user.id);
+    return this.service.browse(kind, user.language, page === undefined ? 1 : Number(page), genres, company, query, platform === undefined ? undefined : Number(platform));
   }
   @Get('providers') async providers(@Req() request: Request) { await this.authorize(request); return this.service.available(); }
   @Get('suggestions')

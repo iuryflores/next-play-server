@@ -1,7 +1,8 @@
+import { markXpDirty } from '../progression/progression-queue';
 import { saveNotification } from '../notifications/notification-store';
-import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, Injectable, Module, OnModuleInit, Patch, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, Injectable, Module, OnModuleInit, Patch, Post, Query, Req } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiQuery, ApiCookieAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ArrayMaxSize, ArrayUnique, IsArray, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
 import type { Request } from 'express';
 import { Connection, Types } from 'mongoose';
@@ -67,6 +68,25 @@ export class AchievementsService implements OnModuleInit {
       this.awards().createIndex({ ownerId: 1, key: 1 }, { unique: true }),
       this.profiles().createIndex({ ownerId: 1 }, { unique: true }),
     ]);
+  }
+  private metricCache = new Map<string, { expires: number; value: Awaited<ReturnType<AchievementsService['metrics']>> }>();
+  private metricPending = new Map<string, Promise<Awaited<ReturnType<AchievementsService['metrics']>>>>();
+  private async automaticMetrics(owner: Types.ObjectId, timeZone: string) {
+    const stamp = await this.connection.collection('user_xp_sync').findOne({ _id: owner }, { projection: { revision: 1 } });
+    const key = `${owner}:${stamp?.revision || 0}:${timeZone}:${new Date().toISOString().slice(0, 10)}`;
+    const cached = this.metricCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    const pending = this.metricPending.get(key);
+    if (pending) return pending;
+    // A revisão persistida invalida entre processos e impede reutilizar o retrato anterior a um salvamento.
+    const work = this.metrics(owner, timeZone).then(value => {
+      for (const [id, entry] of this.metricCache) if (entry.expires <= Date.now()) this.metricCache.delete(id);
+      if (this.metricCache.size >= 500) this.metricCache.delete(this.metricCache.keys().next().value!);
+      this.metricCache.set(key, { expires: Date.now() + 30000, value });
+      return value;
+    });
+    this.metricPending.set(key, work);
+    try { return await work; } finally { if (this.metricPending.get(key) === work) this.metricPending.delete(key); }
   }
   private async metrics(ownerId: Types.ObjectId, timeZone: string) {
     // Leituras locais e projeções pequenas: desbloquear conquistas nunca chama TMDB, Books ou S3.
@@ -139,34 +159,40 @@ export class AchievementsService implements OnModuleInit {
       binge: dailyEpisodeRecord(activity, timeZone) };
     return { counts, evidence };
   }
-  async state(owner: string, unlock = false, requestedZone?: string) {
+  async state(owner: string, unlock = false, requestedZone?: string, automatic = false) {
     if (requestedZone !== undefined && !validTimeZone(requestedZone)) throw new BadRequestException('Fuso horário inválido.');
     const ownerId = new Types.ObjectId(owner);
-    const profile = await this.profiles().findOne({ ownerId });
+    const [profile, knownAwards] = await Promise.all([this.profiles().findOne({ ownerId }), this.awards().find({ ownerId }).toArray()]);
     const timeZone = requestedZone || profile?.timeZone || 'UTC';
-    const { counts: metrics, evidence } = await this.metrics(ownerId, timeZone);
+    const { counts: metrics, evidence } = await (automatic ? this.automaticMetrics(ownerId, timeZone) : this.metrics(ownerId, timeZone));
     if (unlock) {
       // O maior progresso é persistido atomicamente para não perder níveis após exclusões ou sincronizações concorrentes.
-      const peaks = Object.fromEntries(Object.entries(metrics).map(([metric, count]) => [`peaks.${metric}`, count]));
-      try { await this.profiles().updateOne({ ownerId }, { $max: peaks }, { upsert: true }); }
+      const peaks = Object.fromEntries(Object.entries(metrics).filter(([metric, count]) => count > (profile?.peaks?.[metric as AchievementMetric] || 0)).map(([metric, count]) => [`peaks.${metric}`, count]));
+      try { if (Object.keys(peaks).length) await this.profiles().updateOne({ ownerId }, { $max: peaks }, { upsert: true }); }
       catch (error) { if ((error as { code?: number }).code !== 11000) throw error; await this.profiles().updateOne({ ownerId }, { $max: peaks }); }
       // Índice único + setOnInsert tornam sincronizações concorrentes idempotentes.
       // Conquistas desbloqueadas permanecem, mesmo se uma obra/cópia for removida depois.
-      const eligible = achievements.filter(item => !item.legacy && metrics[item.metric] >= item.target);
+      const eligible = achievements.filter(item => !item.legacy && metrics[item.metric] >= item.target && !knownAwards.some(row => row.key === item.id));
       if (eligible.length) try {
         // Um lote evita uma viagem ao Atlas por medalha ao reconhecer histórico antigo.
-        await this.awards().bulkWrite(eligible.map(item => ({ updateOne: { filter: { ownerId, key: item.id }, update: { $setOnInsert: { ownerId, key: item.id, unlockedAt: new Date(), evidence: evidence[item.metric] } }, upsert: true } })), { ordered: false });
+        const granted = await this.awards().bulkWrite(eligible.map(item => ({ updateOne: { filter: { ownerId, key: item.id }, update: { $setOnInsert: { ownerId, key: item.id, unlockedAt: new Date(), evidence: evidence[item.metric] } }, upsert: true } })), { ordered: false });
+        if (granted.upsertedCount > 0) await markXpDirty(this.connection, owner);
       } catch (error) {
         const errors = (error as { writeErrors?: { code: number }[] }).writeErrors;
         if (!errors?.length || errors.some(item => item.code !== 11000)) throw error;
       }
-      if (requestedZone) {
+      if (requestedZone && requestedZone !== profile?.timeZone) {
         try { await this.profiles().updateOne({ ownerId }, { $set: { timeZone } }, { upsert: true }); }
         catch (error) { if ((error as { code?: number }).code !== 11000) throw error; await this.profiles().updateOne({ ownerId }, { $set: { timeZone } }); }
       }
     }
     const [rows, currentProfile] = await Promise.all([this.awards().find({ ownerId }).toArray(), this.profiles().findOne({ ownerId })]);
-    if (unlock) await Promise.all(rows.map(row => saveNotification(this.connection, { ownerId, kind: 'achievement', sourceId: row.key, createdAt: row.unlockedAt })));
+    if (unlock && rows.length) {
+      // Consulta uma vez as notificações existentes, em vez de reenviar um upsert por conquista a cada leitura.
+      const notices = await this.connection.collection('user_notifications').find({ ownerId, kind: 'achievement', sourceId: { $in: rows.map(row => row.key) } }, { projection: { sourceId: 1 } }).toArray();
+      const notified = new Set(notices.map(row => row.sourceId));
+      await Promise.all(rows.filter(row => !notified.has(row.key)).map(row => saveNotification(this.connection, { ownerId, kind: 'achievement', sourceId: row.key, createdAt: row.unlockedAt })));
+    }
     const awards = new Map(rows.map(row => [row.key, row]));
     const progression = (family: string, metric: AchievementMetric) => {
       const milestones = achievements.filter(item => item.family === family && !item.legacy);
@@ -212,7 +238,11 @@ export class AchievementsController {
   @ApiOkResponse({ type: AchievementStateDto, description: 'Mesmo estado retornado pelo GET, após conceder conquistas elegíveis.' })
   @ApiResponse({ status: 400, description: 'Fuso inválido ou campos não permitidos.' })
   @ApiResponse({ status: 403, description: 'Origin diferente de CLIENT_ORIGIN.' })
-  async sync(@Req() request: Request, @Body() dto: SyncDto) { return this.service.state(await this.owner(request), true, dto.timeZone); }
+  @ApiQuery({ name: 'changed', required: false, enum: ['1'], description: 'Sincronização automática: reaproveita métricas por até 30 segundos se a revisão da atividade e o fuso não mudaram. Omitido recalcula; escolhas e celebrações sempre são lidas do banco.' })
+  async sync(@Req() request: Request, @Body() dto: SyncDto, @Query('changed') changed?: string) {
+    if (changed !== undefined && changed !== '1') throw new BadRequestException('Parâmetro changed inválido.');
+    return this.service.state(await this.owner(request), true, dto.timeZone, changed === '1');
+  }
   @Patch('title')
   @ApiOperation({ summary: 'Escolher título já conquistado para o perfil', description: 'achievementId=null remove o título. Nunca aceita conquista de outra conta ou ainda bloqueada.' })
   @ApiOkResponse({ type: TitleResultDto })

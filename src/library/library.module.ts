@@ -1,3 +1,5 @@
+import { finishedSeries, type SeriesLifecycle } from './series-completion';
+import { markXpDirty } from '../progression/progression-queue';
 import { recordSocialActivity } from '../social/social-store';
 import {recordPrivateActivity} from './activity-history';
 import { CommunityService } from '../community/community.service';
@@ -183,6 +185,10 @@ class ItemDto {
   @ApiProperty({ type: String, required: false, maxLength: 117, description: 'Referência opcional. Livros usam googlebooks:book:<volumeId>; sem referência, cadastro manual. Metadados são resolvidos no servidor.' })
   @IsOptional() @IsString() @MaxLength(117) catalogId?: string;
 }
+class SeriesRatingDto {
+  @ApiProperty({ type: Number, minimum: 0, maximum: 5, description: 'Nota geral da série de 1 a 5 estrelas. Zero remove a nota; não altera status, episódios ou avaliações de temporadas.' })
+  @IsInt() @Min(0) @Max(5) stars!: number;
+}
 @Injectable()
 export class LibraryService implements OnModuleInit {
   constructor(@InjectModel(LibraryItem.name) private readonly items: Model<LibraryItem>, private readonly catalog: CatalogService, @InjectModel(CatalogEntry.name) private readonly titles: Model<CatalogEntry>, @InjectModel(TitleComment.name) private readonly comments: Model<TitleComment>, @InjectConnection() private readonly connection: Connection, private readonly episodes: EpisodesService, private readonly books: BooksService, private readonly rewatches: RewatchService, private readonly communityService: CommunityService) {}
@@ -195,7 +201,8 @@ export class LibraryService implements OnModuleInit {
     }
   }
   private async completion(dto: ItemDto, previous?: LibraryItem, catalogId?: string) {
-    if (dto.status !== 'completed') return { watchedDateUnknown: false, ...emptyVoteIdentity, completedOn: null, completedAt: null, stars: 0, feeling: '', favoriteCharacter: '' };
+    // A nota geral de séries pode existir durante o acompanhamento e não se perde ao editar seus dados.
+    if (dto.status !== 'completed') return { watchedDateUnknown: false, ...emptyVoteIdentity, completedOn: null, completedAt: null, stars: (previous?.kind || dto.kind) === 'series' ? previous?.stars || 0 : 0, feeling: '', favoriteCharacter: '' };
     const now = new Date();
     // A data de cadastro continua em completedAt; ausência de data de consumo é explícita.
     if (dto.watchedDateUnknown === true && dto.completedOn) throw new BadRequestException('Escolha uma data ou Não sei a data.');
@@ -330,6 +337,8 @@ export class LibraryService implements OnModuleInit {
   async list(ownerId: string) {
     const items = await this.items.find({ ownerId }, { gameSessions: 0, gameStatusHistory: 0 }).sort({ updatedAt: -1, _id: -1 }).exec();
     // Uma consulta em lote reconhece importações antigas sem conta registrada; não inventa a origem nem grava migração na leitura.
+    // Metadados independentes viajam juntos ao banco, em vez de somar a latência de cada consulta.
+    const steamMetadata = (async () => {
     const gameItems=items.filter(item=>item.kind==='game');
     if(gameItems.length){
       const sources=await this.connection.collection('external_game_data').find({ownerId:new Types.ObjectId(ownerId),provider:'steam',itemId:{$in:gameItems.map(item=>item._id)}},{projection:{itemId:1,externalId:1}}).toArray();
@@ -338,6 +347,8 @@ export class LibraryService implements OnModuleInit {
     }
     // A coleção é uma leitura local: metadados ausentes não bloqueiam a volta
     // à tela com consultas externas ou gravações título a título no Atlas.
+    })();
+    const releaseMetadata = (async () => {
     const missingRelease = items.filter(item => item.releaseDate === undefined && item.catalogKey);
     if (missingRelease.length) {
       const stored = await this.titles.find({ key: { $in: missingRelease.map(item => item.catalogKey!) } }).select('key releaseDate unreleased').lean().exec();
@@ -347,6 +358,8 @@ export class LibraryService implements OnModuleInit {
         if (title?.releaseDate !== undefined) { item.releaseDate = title.releaseDate; item.unreleased = title.unreleased; }
       }
     }
+    })();
+    const gameMetadata = (async () => {
     const games = items.filter(item => item.kind === 'game' && item.catalogId?.startsWith('igdb:game:'));
     if (games.length) {
       // Reconhece DLCs antigas por vínculos já consultados, sem rede nem migração de horas no carregamento.
@@ -357,19 +370,64 @@ export class LibraryService implements OnModuleInit {
         if (parent) game.parentGameCatalogId = parent._id;
       }
     }
+    })();
     const series = items.filter(item => item.kind === 'series' && item.catalogId?.startsWith('tmdb:series:'));
-    if (!series.length) return items.map(item => this.publicItem(item));
-    const [seasons, progress] = await Promise.all([
+    if (!series.length) { await Promise.all([steamMetadata, releaseMetadata, gameMetadata]); return items.map(item => this.publicItem(item)); }
+    const [seasons, progress, lifecycleRows] = await Promise.all([
       this.connection.collection('series_seasons').find({ catalogId: { $in: series.map(item => item.catalogId) }, number: { $gt: 0 } }, { projection: { catalogId: 1, number: 1, loaded: 1, total: 1, 'episodes.number': 1, 'episodes.name': 1, 'episodes.airDate': 1 } }).sort({ number: 1 }).toArray(),
       this.connection.collection('episode_progress').find({ itemId: { $in: series.map(item => viewingProgressId(item)) }, season: { $gt: 0 } }, { projection: { itemId: 1, season: 1, episode: 1, watchedAt: 1 } }).toArray(),
+      this.connection.collection<{ _id: string; value: SeriesLifecycle; expires: Date }>('series_upcoming').find({ _id: { $in: series.map(item => item.catalogId + ':pt-BR') } }).toArray(),
+      steamMetadata, releaseMetadata, gameMetadata,
     ]);
-    return items.map(item => {
-      if (!series.some(value => value.id === item.id)) return this.publicItem(item);
-      const available = seasons.filter(season => season.catalogId === item.catalogId);
-      const latest = progress.filter(row => row.itemId.toString() === viewingProgressId(item).toString() && row.watchedAt).sort((a, b) => new Date(b.watchedAt).getTime() - new Date(a.watchedAt).getTime() || b.season - a.season || b.episode - a.episode)[0];
+    // Indexa uma vez: cada série lê apenas suas temporadas e episódios, em vez de varrer o histórico inteiro.
+    const seriesIds = new Set(series.map(item => item.id));
+    const seasonsByCatalog = new Map<string, typeof seasons>();
+    for (const season of seasons) {
+      const entries = seasonsByCatalog.get(season.catalogId) || [];
+      entries.push(season); seasonsByCatalog.set(season.catalogId, entries);
+    }
+    const progressByItem = new Map<string, typeof progress>();
+    for (const row of progress) {
+      const key = row.itemId.toString(), entries = progressByItem.get(key) || [];
+      entries.push(row); progressByItem.set(key, entries);
+    }
+    // O estado público vem do cache em lote; só séries com todos os episódios locais vistos precisam validar o encerramento.
+    const lifecycles = new Map(lifecycleRows.map(row => [row._id.split(':').slice(0, 3).join(':'), row.value]));
+    const candidates = series.filter(item => {
+      if (item.status === 'completed' || item.rewatchActiveId) return false;
+      const directory = seasonsByCatalog.get(item.catalogId!) || [];
+      const seen = new Set((progressByItem.get(item._id.toString()) || []).map(row => `${row.season}:${row.episode}`));
+      return directory.length > 0 && directory.every(season => season.loaded) && directory.some(season => season.episodes?.length) && directory.every(season => (season.episodes || []).every((episode: { number: number }) => seen.has(`${season.number}:${episode.number}`)));
+    });
+    const catalogIds = [...new Set(candidates.map(item => item.catalogId!))];
+    for (let offset = 0; offset < catalogIds.length; offset += 4) await Promise.all(catalogIds.slice(offset, offset + 4).map(async catalogId => {
+      const cached = lifecycleRows.find(row => row._id === catalogId + ':pt-BR');
+      if (cached?.value.seriesStatus && cached.value.episodeCount && cached.expires > new Date()) return;
+      try {
+        const lifecycle = await this.catalog.upcoming(catalogId, 'pt-BR');
+        if (lifecycle.stale) lifecycles.delete(catalogId);
+        else lifecycles.set(catalogId, lifecycle);
+      }
+      catch { lifecycles.delete(catalogId); /* Sem confirmação do catálogo, mantém em dia e não presume encerramento. */ }
+    }));
+    const completions: Parameters<typeof this.items.bulkWrite>[0] = [];
+    const result = items.map(item => {
+      if (!seriesIds.has(item.id)) return this.publicItem(item);
+      const available = seasonsByCatalog.get(item.catalogId || '') || [];
+      const itemProgress = progressByItem.get(viewingProgressId(item).toString()) || [];
+      const latest = itemProgress.filter(row => row.watchedAt).sort((a, b) => new Date(b.watchedAt).getTime() - new Date(a.watchedAt).getTime() || b.season - a.season || b.episode - a.episode)[0];
+      const watched = new Set(itemProgress.map(row => row.season + ':' + row.episode));
+      const lifecycle = lifecycles.get(item.catalogId!);
+      if (item.status !== 'completed' && !item.rewatchActiveId && finishedSeries(lifecycle, available.map(season => ({ number: Number(season.number), loaded: Boolean(season.loaded), episodes: season.episodes })), watched, new Date().toISOString().slice(0, 10))) {
+        // Não inventa uma data de consumo quando algum episódio foi registrado sem data.
+        const dated = itemProgress.length > 0 && itemProgress.every(row => row.watchedAt);
+        const completionDate = dated && latest ? new Date(latest.watchedAt) : new Date();
+        const changes = { status: 'completed' as const, completedAt: completionDate, completedOn: dated ? completionDate.toISOString().slice(0, 10) : null, watchedDateUnknown: !dated, episodesCompletedAt: new Date() };
+        completions.push({ updateOne: { filter: { _id: item._id, ownerId: item.ownerId, status: item.status, rewatchActiveId: null, ...(item.get('updatedAt') ? { updatedAt: item.get('updatedAt') } : {}) }, update: { $set: changes } } });
+        item.set(changes);
+      }
       const base = this.publicItem(item);
       const lastWatchedAt = latest && (!base.lastWatchedAt || new Date(latest.watchedAt) >= new Date(base.lastWatchedAt)) ? latest.watchedAt : base.lastWatchedAt;
-      const watched = new Set(progress.filter(row => row.itemId.toString() === viewingProgressId(item).toString()).map(row => row.season + ':' + row.episode));
       let next: { season: number; episode: number | null; name?: string; airDate?: string } | null = null;
       let count = 0;
       for (const season of available) {
@@ -386,8 +444,13 @@ export class LibraryService implements OnModuleInit {
       const pendingReleased = available.flatMap(season => (season.episodes || []).filter((episode: { number: number; airDate?: string }) => (!episode.airDate || episode.airDate <= today) && !watched.has(season.number + ':' + episode.number)).map((episode: { number: number; name: string; airDate?: string }) => ({ season: season.number, episode: episode.number, name: episode.name, airDate: episode.airDate })));
       const caughtUp = watched.size > 0 && available.length > 0 && available.every(season => season.loaded) && pendingReleased.length === 0;
       if (pendingReleased.length) next = pendingReleased[0];
-      return { ...base, caughtUp, lastWatchedAt, lastWatchedEpisode: latest ? { season: latest.season, episode: latest.episode } : undefined, status: item.rewatchActiveId ? 'active' : item.status === 'completed' ? 'completed' : watched.size > 0 ? 'active' : 'planned', inProgress: Boolean(item.rewatchActiveId) || (item.status !== 'completed' && watched.size > 0 && !caughtUp), episodeProgress: { next, watched: count, total: available.reduce((sum, season) => sum + (season.loaded ? (season.episodes || []).filter((episode: { airDate?: string }) => !episode.airDate || episode.airDate <= new Date().toISOString().slice(0, 10)).length : season.total || 0), 0), initialized: available.length > 0 } };
+      return { ...base, seriesStatus: lifecycle?.seriesStatus || 'unknown', caughtUp: item.status !== 'completed' && caughtUp, lastWatchedAt, lastWatchedEpisode: latest ? { season: latest.season, episode: latest.episode } : undefined, status: item.rewatchActiveId ? 'active' : item.status === 'completed' ? 'completed' : watched.size > 0 ? 'active' : 'planned', inProgress: Boolean(item.rewatchActiveId) || (item.status !== 'completed' && watched.size > 0 && !caughtUp), episodeProgress: { next, watched: count, total: available.reduce((sum, season) => sum + (season.loaded ? (season.episodes || []).filter((episode: { airDate?: string }) => !episode.airDate || episode.airDate <= new Date().toISOString().slice(0, 10)).length : season.total || 0), 0), initialized: available.length > 0 } };
     });
+    if (completions.length) {
+      const updated = await this.items.bulkWrite(completions);
+      if (updated.modifiedCount) await markXpDirty(this.connection, ownerId);
+    }
+    return result;
   }
   async upcoming(ownerId: string, id: string, language: string) {
     const item = await this.items.findOne({ _id: this.id(id), ownerId, kind: 'series', archived: { $ne: true } }).exec();
@@ -542,6 +605,12 @@ export class LibraryService implements OnModuleInit {
     try { const item = await this.items.create({ ...payload, ...completion, ...(payload.kind === 'game' ? { gameStatusHistory: [gameStatusEvent('added', null, dto.status)] } : {}), catalogKey, ownerId }); if (allEpisodes) { await this.episodes.markComplete(item._id, allEpisodes, item.completedAt || new Date()); item.episodesCompletedAt = new Date(); } await recordSocialActivity(this.connection, item._id, dto.status === 'completed' ? 'completed' : dto.status === 'active' ? 'started' : 'added', `added:${item.id}`); return this.publicItem(item); }
     catch (error) { if ((error as { code?: number }).code === 11000) throw new ConflictException('Este título já está na sua coleção.'); throw error; }
   }
+  async seriesRating(ownerId: string, id: string, dto: SeriesRatingDto) {
+    // Atualiza somente a nota para não sobrescrever progresso salvo por outra aba ou concluir a série.
+    const item = await this.items.findOneAndUpdate({ _id: this.id(id), ownerId, kind: 'series' }, { $set: { stars: dto.stars } }, { new: true }).exec();
+    if (!item) throw new NotFoundException('Série não encontrada.');
+    return this.publicItem(item);
+  }
   async update(ownerId: string, id: string, dto: ItemDto) {
     const existing = await this.items.findOne({ _id: this.id(id), ownerId }).exec();
     if (!existing) throw new NotFoundException('Item não encontrado.');
@@ -644,7 +713,7 @@ class LibraryController {
     return (await this.auth.forRequest(request)).id;
   }
   @Get(':id/rewatches')
-  @ApiOperation({ summary: 'Histórico privado de visualizações de filmes e séries', description: 'A primeira visualização mantém as datas e episódios existentes. Cada repetição possui início e conclusão próprios, com episódios e datas separados. Sem alterar XP ou contagens por títulos distintos.' })
+  @ApiOperation({ summary: 'Histórico privado de visualizações de filmes e séries', description: 'A primeira visualização mantém as datas e episódios existentes. Cada repetição possui início e conclusão próprios, com episódios e datas separados. Contagens por títulos distintos permanecem inalteradas; revisões concluídas de filmes e seu tempo conhecido são reconhecidos pelo sincronizador de XP.' })
   @ApiOkResponse({ description: 'Até dez entries em ordem decrescente e nextBefore (número ou null). Cada entrada: id, number, original, active, startedAt opcional, completedAt/completedOn opcionais, watchedDateUnknown e episodes (season, episode, watchedAt nullable, watchedDateUnknown).' })
   @ApiResponse({ status: 404, description: 'Título inexistente ou de outra conta.' })
   @ApiQuery({ name: 'before', required: false, type: Number, description: 'nextBefore da página anterior. Inteiro de 2 a 1001; dez visualizações por página.' })
@@ -653,7 +722,7 @@ class LibraryController {
     return this.rewatches.history(await this.owner(request), id, before === undefined ? undefined : Number(before));
   }
   @Post(':id/rewatches') @HttpCode(200)
-  @ApiOperation({ summary: 'Planejar, iniciar ou concluir outra visualização', description: 'Somente filmes e séries já assistidos e não arquivados. Mantém a primeira conclusão, avaliações e episódios. Uma visualização ativa por título; até 1000 repetições. expectedCount evita duplicações concorrentes. Séries TMDB só encerram após assistir todos os episódios regulares já lançados; séries manuais encerram sem progresso por episódio; também é possível Concluir série no acompanhamento. Não concede XP adicional.' })
+  @ApiOperation({ summary: 'Planejar, iniciar ou concluir outra visualização', description: 'Somente filmes e séries já assistidos e não arquivados. Mantém a primeira conclusão, avaliações e episódios. Uma visualização ativa por título; até 1000 repetições. expectedCount evita duplicações concorrentes. Séries TMDB só encerram após assistir todos os episódios regulares já lançados; séries manuais encerram sem progresso por episódio; também é possível Concluir série no acompanhamento. O sincronizador de XP reconhece cada revisão concluída de filme (20 XP) e horas completas conhecidas (5 XP/h); intenção e revisão em andamento não concedem XP. Episódios continuam pontuando por episódio distinto.' })
   @ApiOkResponse({ description: 'item com rewatchWanted, rewatching, rewatchCount, watchedBefore e progresso da visualização atual.' })
   @ApiResponse({ status: 400, description: 'Ação, data, categoria ou estado inválidos; série com episódios pendentes.' })
   @ApiResponse({ status: 409, description: 'Histórico alterado ou visualização já em andamento.' })
@@ -681,7 +750,10 @@ class LibraryController {
   @Post(':id/comments') @HttpCode(204) async comment(@Req() request: Request, @Param('id') id: string, @Body() dto: CommentDto) { await this.library.comment(await this.owner(request), id, dto); }
   @ApiOperation({ summary: 'Remover o próprio comentário ou resposta', description: 'Somente o autor. Remove texto e curtidas, preservando um marcador e as respostas de outras pessoas. Reenvio é idempotente.' })
   @Delete(':id/comments/:commentId') @HttpCode(204) async deleteComment(@Req() request: Request, @Param('id') id: string, @Param('commentId') commentId: string) { await this.library.deleteComment(await this.owner(request), id, commentId); }
-  @Get(':id/upcoming') async upcoming(@Req() request: Request, @Param('id') id: string) { return this.library.upcoming(await this.owner(request), id, await this.language(request)); }
+  @Get(':id/upcoming')
+  @ApiOperation({ summary: 'Consultar próximos episódios e situação da série no catálogo' })
+  @ApiOkResponse({ description: 'episode ou null, ended (encerrada/cancelada), seriesStatus opcional (ended/canceled/returning/unknown), episodeCount opcional (total regular no catálogo), stale e unsupported. Cache público de seis horas por catálogo/idioma; falha pode retornar cache antigo com stale=true, que não confirma conclusão automática.' })
+  async upcoming(@Req() request: Request, @Param('id') id: string) { return this.library.upcoming(await this.owner(request), id, await this.language(request)); }
   @Get(':id/game-status-history')
   @ApiOperation({ summary: 'Consultar histórico privado de status do jogo', description: 'Registra somente alterações novas: adição, mudança real de status, arquivamento/restauração e início automático ao registrar horas/sessão. Datas recordedAt são do servidor no momento da alteração, nunca datas antigas de consumo. Jogos legados não recebem eventos inventados. Cada DLC mantém seu próprio histórico. Eventos gravados atomicamente com a alteração; consultas e reavaliações sem mudança de estado não criam eventos.' })
   @ApiOkResponse({ description: 'events: até 30 objetos com id UUID, type (added/status/archived/restored), fromStatus nullable, toStatus (planned/active/completed), source (manual/session/time-adjustment), recordedAt ISO. Mais recentes primeiro. nextBefore UUID ou null; earlierHistoryUnknown indica ausência de registro da adição original.' })
@@ -725,7 +797,7 @@ class LibraryController {
   @ApiResponse({ status: 429, description: 'Limite de requisições atingido.' })
   async explore(@Req() request: Request, @Query('page') page?: string, @Query('kind') kind?: string) { const owner = await this.owner(request); const language = await this.language(request); this.catalog.limit(owner); const result = await this.library.explore(owner, language, page === undefined ? 1 : Number(page), kind); return { sections: await Promise.all(result.sections.map(async section => ({ ...section, results: 'source' in section && (section.source === 'tmdb' || section.source === 'googlebooks') ? section.results : await Promise.all(section.results.map(item => this.catalog.localize(item, language))) }))) }; }
   @Get()
-  @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Jogos importados podem incluir steamImportAppId para link do jogo na Steam; a conta de origem é privada e só aparece em game-imports/stats do dono. Jogos podem incluir parentGameCatalogId, vínculo público IGDB de DLC/expansão dependente; playtimeMinutes permanece exclusivo de cada parte, sem total duplicado. Livros não são importados automaticamente da Minha Coleção.' })
+  @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Séries incluem seriesStatus (ended, canceled, returning ou unknown) e caughtUp. Todos os episódios regulares vistos só concluem automaticamente quando o TMDB confirma encerramento/cancelamento e a contagem integral do catálogo coincide; especiais são opcionais. A reconciliação persiste a conclusão e invalida o XP em segundo plano; falha ou catálogo incompleto não presume término. Jogos importados podem incluir steamImportAppId para link do jogo na Steam; a conta de origem é privada e só aparece em game-imports/stats do dono. Jogos podem incluir parentGameCatalogId, vínculo público IGDB de DLC/expansão dependente; playtimeMinutes permanece exclusivo de cada parte, sem total duplicado. Livros não são importados automaticamente da Minha Coleção.' })
   async list(@Req() request: Request) { return { items: await this.catalog.localizeMany(await this.library.list(await this.owner(request)), await this.language(request)) }; }
   @Post()
   @ApiOperation({ summary: 'Adicionar obra ao acompanhamento', description: 'Livros aceitam cadastro manual ou Google Books e estados Quero ler/Lendo/Lido. Uma obra por usuário/referência; não cria cópia possuída. Conclusão aceita data e nota opcionais.' })
@@ -734,6 +806,13 @@ class LibraryController {
   @ApiResponse({ status: 409, description: 'O acompanhamento ou tempo de jogo mudou durante a edição; atualize antes de reenviar.' })
   @ApiOperation({ summary: 'Atualizar acompanhamento privado', description: 'Para livros, altera estado de leitura, data, nota e anotações. Voltar de Lido remove os dados de conclusão. Somente dono; não altera exemplares da Minha Coleção.' })
   async update(@Req() request: Request, @Param('id') id: string, @Body() dto: ItemDto) { return { item: await this.catalog.localize(await this.library.update(await this.owner(request), id, dto), await this.language(request)) }; }
+  @Patch(':id/rating')
+  @ApiOperation({ summary: 'Avaliar a série durante ou após o acompanhamento', description: 'Somente dono. Atualiza apenas a nota geral, inclusive durante uma revisão ou quando arquivada. Não conclui a série, não altera datas, episódios ou notas de temporadas e não concede XP por consumo.' })
+  @ApiOkResponse({ description: 'Objeto item atualizado com stars entre 0 e 5.' })
+  @ApiResponse({ status: 400, description: 'Nota ausente, não inteira, fora de 0 a 5 ou campos não permitidos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 404, description: 'Série não encontrada para este dono.' })
+  async seriesRating(@Req() request: Request, @Param('id') id: string, @Body() dto: SeriesRatingDto) { return { item: await this.catalog.localize(await this.library.seriesRating(await this.owner(request), id, dto), await this.language(request)) }; }
   @Delete(':id') @HttpCode(204) async remove(@Req() request: Request, @Param('id') id: string) { await this.library.remove(await this.owner(request), id); }
   @Patch(':id/priority')
   @ApiOperation({ summary: 'Alterar prioridade privada do backlog', description: 'Alta, média, baixa ou nenhuma. Não altera conclusão, progresso, notas, horas ou sessões. A ordenação por prioridade se aplica à tela Para depois. Não concede XP.' })

@@ -39,7 +39,7 @@ test('reassistir preserva a primeira vez e isola intenção, ciclos, datas e epi
   r = await action('finish', 1, { watchedDateUnknown: true }); assert.equal(r.status, 200); item = (await r.json()).item;
   assert.equal(item.status, 'completed'); assert.equal(item.stars, 4); assert.equal(item.feeling, 'loved'); assert.equal(item.completedOn, '2020-06-01');
   let history = await (await call(path, 'GET', a)).json(); assert.equal(history.entries.length, 2); assert.equal(history.entries[0].number, 2); assert.equal(history.entries[0].completedOn, null); assert.equal(history.entries[0].watchedDateUnknown, true); assert.equal(history.entries[1].completedOn, '2020-06-01');
-  assert.equal(await xp(), movieXp);
+  assert.equal(await xp(), movieXp + 20, 'revisão concluída do filme concede XP sem repetir o bônus de avaliação');
   assert.equal((await action('finish', 1)).status, 400);
   assert.equal((await action('plan', 1)).status, 200); assert.equal((await action('unplan', 1)).status, 200);
   r = await action('start', 1); assert.equal(r.status, 200); item = (await r.json()).item;

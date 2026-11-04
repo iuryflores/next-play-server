@@ -28,7 +28,10 @@ test('plataforma normaliza grafia, separa consoles e preserva a contagem geral',
 });
 
 test('meta por plataforma persiste, protege validações e congela somente conclusões elegíveis', async t => {
-  const app = await createApp(); await app.listen(0, '127.0.0.1');
+  const app = await createApp();
+  // Isola o efeito da ação: o processamento periódico do histórico tem testes próprios.
+  app.get(require('../dist/progression/progression.module').ProgressionService).onModuleDestroy();
+  await app.listen(0, '127.0.0.1');
   const base = await app.getUrl(), db = app.get(getConnectionToken());
   t.after(async () => { try { assert.match(database, /^nextplay_platform_goal_test_[a-f0-9]{32}$/); assert.equal(db.name, database); await db.dropDatabase(); } finally { await app.close(); } });
   const call = (path, method = 'GET', cookie, body, origin = process.env.CLIENT_ORIGIN) => fetch(base + '/api' + path, { method, headers: { origin, ...(cookie ? { cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });

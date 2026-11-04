@@ -1,3 +1,4 @@
+import { saveNotification } from '../notifications/notification-store';
 import { Connection, Types } from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import {recordPrivateActivity} from '../library/activity-history';
@@ -45,7 +46,9 @@ export async function recordSocialActivity(connection: Connection, itemId: Types
       recipientIds = [...new Map(matches.map(row => [row.ownerId.toString(), row.ownerId])).values()];
     }
     // A data registra a ação no app, nunca inventa o dia em que uma importação foi consumida.
-    await connection.collection<SocialActivity>('social_activity').updateOne({ sourceKey }, { $setOnInsert: { _id: new Types.ObjectId(), ownerId: item.ownerId, itemId, type, recordedAt, sourceKey, recipientIds } }, { upsert: true });
+    const saved = await connection.collection<SocialActivity>('social_activity').updateOne({ sourceKey }, { $setOnInsert: { _id: new Types.ObjectId(), ownerId: item.ownerId, itemId, type, recordedAt, sourceKey, recipientIds } }, { upsert: true });
+    // O sino consulta apenas o contador; novos avisos são persistidos junto do evento, sem depender de uma leitura posterior.
+    if (saved.upsertedId && type === 'completed') await Promise.all(recipientIds.map(ownerId => saveNotification(connection, { ownerId, kind: 'friend-activity', sourceId: saved.upsertedId!.toString(), senderId: item.ownerId.toString(), createdAt: recordedAt })));
   } catch {
     // Falha na camada social não desfaz um acompanhamento já salvo com sucesso.
     console.warn('[Social] Não foi possível registrar uma atividade.');

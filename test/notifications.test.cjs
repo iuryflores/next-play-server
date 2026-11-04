@@ -12,6 +12,7 @@ process.env.SWAGGER_ENABLED = 'true';
 const { createApp } = require('../dist/bootstrap');
 const { getConnectionToken } = require('@nestjs/mongoose');
 const { Types } = require('mongoose');
+const { NotificationsService } = require('../dist/notifications/notifications.module');
 
 test('central persiste eventos e leituras, protege contas e acompanha convites', async t => {
   const app = await createApp();
@@ -34,6 +35,10 @@ test('central persiste eventos e leituras, protege contas e acompanha convites',
     return { cookie: response.headers.get('set-cookie').split(';')[0], id: (await response.json()).user.id };
   };
   const a = await register('notify-a'), b = await register('notify-b');
+  const notifications = app.get(NotificationsService);
+  let repairs = 0;
+  const reconcile = notifications.reconcile.bind(notifications);
+  notifications.reconcile = async (...args) => { repairs++; return reconcile(...args); };
   const list = async user => {
     const response = await call('/notifications', 'GET', user.cookie);
     assert.equal(response.status, 200);
@@ -53,6 +58,12 @@ test('central persiste eventos e leituras, protege contas e acompanha convites',
   assert.ok(!JSON.stringify(state).includes('@example.test'));
   assert.equal((await list(a)).items.length, 0);
   assert.equal((await list(b)).unreadCount, 1, 'consultar não marca leitura');
+  const repairsBeforeSummary = repairs;
+  const summary = await (await call('/notifications?summary=1', 'GET', b.cookie)).json();
+  assert.deepEqual(summary, { items: [], unreadCount: 1, nextCursor: null });
+  assert.equal(repairs, repairsBeforeSummary, 'resumo reutiliza recuperação recente e não varre novamente o histórico');
+  assert.equal((await call('/notifications?summary=bad', 'GET', b.cookie)).status, 400);
+  assert.equal((await call('/notifications?summary=1&cursor=invalid', 'GET', b.cookie)).status, 400);
   assert.equal((await call(`/notifications/${invite.id}/read`, 'PATCH', a.cookie)).status, 404);
   assert.equal((await call(`/notifications/${invite.id}/read`, 'PATCH', b.cookie, undefined, 'https://evil.example')).status, 403);
   assert.equal((await call('/notifications/read-all', 'POST', b.cookie, undefined, 'https://evil.example')).status, 403);
@@ -95,6 +106,8 @@ test('central persiste eventos e leituras, protege contas e acompanha convites',
 
   // O histórico anterior à central é recuperado sem depender de uma nova conquista.
   await db.collection('achievement_awards').insertOne({ ownerId: new Types.ObjectId(a.id), key: 'cinephile-100', unlockedAt: new Date('2026-10-01'), celebratedAt: new Date(), evidence: ['Histórico privado'] });
+  // Simula o vencimento da recuperação periódica sem esperar cinco minutos no teste.
+  notifications.repairs.get(a.id).until = 0;
   assert.equal((await list(a)).unreadCount, 1);
   assert.ok((await list(a)).items[0].achievement.evidence.includes('Histórico privado'));
   assert.ok(!(await list(b)).items.some(item => item.achievement?.evidence.includes('Histórico privado')));

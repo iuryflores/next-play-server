@@ -53,6 +53,8 @@ test('curtidas e respostas são idempotentes, privadas por participação e noti
   assert.equal((await call('/notifications/' + notice.id + '/read', 'PATCH', a)).status, 204);
   // Recuperação após falha de entrega usa a resposta persistida, sem gerar outra chave de evento.
   await db.collection('user_notifications').deleteOne({ _id: new Types.ObjectId(notice.id) });
+  // A entrega interrompida é recuperada na próxima janela periódica, sem esperar cinco minutos no teste.
+  for (const entry of app.get(require('../dist/notifications/notifications.module').NotificationsService).repairs.values()) entry.until = 0;
   notices = await (await call('/notifications', 'GET', a)).json(); assert.equal(notices.items.filter(row => row.kind === 'comment-reply').length, 1);
   const recovered = notices.items[0]; await call('/notifications/' + recovered.id + '/read', 'PATCH', a);
   await call(path(first) + '/comments/' + root.id + '/replies', 'POST', a, { text: 'Minha própria resposta', clientRequestId: randomUUID() });

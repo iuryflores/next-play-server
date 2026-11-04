@@ -9,7 +9,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { AvatarStorage } from '../auth/avatar-storage';
 import { getConfig } from '../config';
-import { ProgressionModule, ProgressionService } from '../progression/progression.module';
+import { ProgressionModule } from '../progression/progression.module';
 import { levelFromXp } from '../progression/progression-rules';
 import { achievements } from '../achievements/achievement-rules';
 import { activitySources, SocialSettings, SocialActivity } from './social-store';
@@ -44,7 +44,7 @@ class FollowDto { @ApiProperty({ type: Boolean }) @IsBoolean() following!: boole
 class FavoriteDto { @ApiProperty({type:Boolean,description:'Estado desejado. Adicionar exige título próprio não arquivado; até dez favoritos. Remover sempre permite limpar a própria seleção.'}) @IsBoolean() favorite!:boolean; }
 @Injectable()
 export class SocialService implements OnModuleInit {
-  constructor(@InjectConnection() private readonly connection: Connection, private readonly avatars: AvatarStorage, private readonly progression: ProgressionService) {}
+  constructor(@InjectConnection() private readonly connection: Connection, private readonly avatars: AvatarStorage) {}
   async onModuleInit() {
     await this.connection.collection('shared_titles').createIndex({ownerId:1,itemId:1},{unique:true});
     await this.connection.collection('social_follows').createIndex({ ownerId: 1, targetId: 1 }, { unique: true });
@@ -82,7 +82,7 @@ export class SocialService implements OnModuleInit {
     if (!own && !setting.publicProfile) throw new NotFoundException('Perfil privado ou não encontrado.');
     const user = await this.connection.collection('users').findOne({ _id: ownerId }, { projection: { displayName: 1, avatar: 1, avatarKey: 1 } });
     if (!user) throw new NotFoundException('Perfil não encontrado.');
-    await this.progression.recognize(id);
+    // O perfil público usa créditos persistidos; não recalcula o histórico privado de outra pessoa.
     const credits = await this.connection.collection('user_xp_credits').aggregate<{ xp: number }>([{ $match: { ownerId } }, { $group: { _id: null, xp: { $sum: { $multiply: ['$units', '$rate'] } } } }]).toArray();
     const base = { ownerId, status: 'completed', archived: { $ne: true } };
     // Legados duplicados não repetem títulos nem alteram a contagem pública.

@@ -11,6 +11,14 @@ const { getConnectionToken } = require('@nestjs/mongoose');
 const { Types } = require('mongoose');
 test('friend acceptance gates rankings, ranks XP fairly and supports removal', async t => {
   const app = await createApp(); await app.listen(0, '127.0.0.1'); const base = await app.getUrl(); const db = app.get(getConnectionToken());
+  const { ProgressionService } = require('../dist/progression/progression.module');
+  const { markXpDirty } = require('../dist/progression/progression-queue');
+  const xp = app.get(ProgressionService);
+  // Processa a fila explicitamente para que o teste não dependa do relógio do worker.
+  xp.onModuleDestroy(); xp.bootstrapDone = true;
+  let xpReads = 0;
+  const recognize = xp.recognize.bind(xp);
+  xp.recognize = async owner => { xpReads++; return recognize(owner); };
   t.after(async () => { try { assert.match(database, /^nextplay_friends_test_[a-f0-9]{32}$/); assert.equal(db.name, database); await db.dropDatabase(); } finally { await app.close(); } });
   const call = (path, method = 'GET', body, cookie, origin = process.env.CLIENT_ORIGIN) => fetch(base + '/api' + path, { method, headers: { origin, ...(cookie ? { cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const register = async email => { const r = await call('/auth/register', 'POST', { email, password: 'Long-test-password-123!' }); assert.equal(r.status, 201); return { cookie: r.headers.get('set-cookie').split(';')[0], id: (await r.json()).user.id }; };
@@ -36,8 +44,11 @@ test('friend acceptance gates rankings, ranks XP fairly and supports removal', a
   await db.collection('library_items').insertOne({ _id: itemId, ownerId: new Types.ObjectId(b.id), title: 'Private title', kind: 'series', status: 'active', catalogId: 'tmdb:series:22', notes: 'secret' });
   await db.collection('series_seasons').insertOne({ catalogId: 'tmdb:series:22', number: 1, episodes: [{ number: 1, runtime: 45 }, { number: 2 }] });
   await db.collection('episode_progress').insertMany([{ itemId, season: 1, episode: 1, watchedAt: new Date() }, { itemId, season: 1, episode: 2, watchedAt: new Date() }]);
+  await xp.sync(b.id);
+  const readsBeforeRanking = xpReads;
   data = await (await call('/friends', 'GET', undefined, a.cookie)).json();
-  assert.equal(data.ranking[0].id, b.id); assert.equal(data.ranking[0].minutes, 45); assert.equal(data.ranking[0].episodes, 2); assert.equal(data.ranking[0].incomplete, true); assert.equal(data.ranking[1].rank, 2); assert.ok(!JSON.stringify(data).includes('Private title')); assert.ok(!JSON.stringify(data).includes('secret'));
+  assert.equal(data.ranking[0].id, b.id);
+  assert.equal(xpReads, readsBeforeRanking, 'ranking não recalcula XP dos participantes'); assert.equal(data.ranking[0].minutes, 45); assert.equal(data.ranking[0].episodes, 2); assert.equal(data.ranking[0].incomplete, true); assert.equal(data.ranking[1].rank, 2); assert.ok(!JSON.stringify(data).includes('Private title')); assert.ok(!JSON.stringify(data).includes('secret'));
   assert.equal((await call('/friends?scope=all')).status,401);
   assert.equal((await call('/friends?scope=invalid','GET',undefined,a.cookie)).status,400);
   await db.collection('achievement_profiles').insertOne({ownerId:new Types.ObjectId(b.id),selectedId:'cinephile-100',peaks:{movies:338}});
@@ -68,7 +79,7 @@ test('friend acceptance gates rankings, ranks XP fairly and supports removal', a
     {ownerId:new Types.ObjectId(c.id),kind:'book',status:'completed',title:'Livro de outra conta'},
   ]);
   const beforeXp=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
-  assert.ok(beforeXp.ranking.find(row=>row.id===b.id).xp>0,'ranking reconhece o histórico antes de o usuário abrir o perfil');
+  assert.ok(beforeXp.ranking.find(row=>row.id===b.id).xp>0,'ranking mantém o crédito persistido antes da próxima atualização');
   const xpResponse=await call('/progression/sync','POST',{},b.cookie);
   assert.equal(xpResponse.status,200);
   const xpState=await xpResponse.json();
@@ -110,10 +121,14 @@ test('friend acceptance gates rankings, ranks XP fairly and supports removal', a
   assert.equal(await db.collection('user_xp_credits').countDocuments({ownerId:lucasId}),0);
   await call('/friends','GET',undefined,a.cookie);
   assert.equal(await db.collection('user_xp_credits').countDocuments({ownerId:lucasId}),0,'escopo amigos não reconhece contas que não participam dele');
+  await markXpDirty(db, lucas.id);
+  await xp.tick();
+  const readsBeforeGlobalRanking = xpReads;
   const histories=await Promise.all([a,b].map(async user=>{
     const response=await call('/friends?scope=all','GET',undefined,user.cookie);
     assert.equal(response.status,200); return response.json();
   }));
+  assert.equal(xpReads, readsBeforeGlobalRanking, 'ranking geral lê o histórico já reconhecido pela fila');
   for(const history of histories) {
     const row=history.ranking.find(row=>row.id===lucas.id);
     assert.equal(row.rank,1,'XP dos jogos supera tempo em séries no ranking geral'); assert.equal(row.minutes,0); assert.equal(history.rankingMetric,'xp'); assert.equal(row.games,73); assert.equal(row.xp,3650); assert.equal(row.level,14);
@@ -122,5 +137,19 @@ test('friend acceptance gates rankings, ranks XP fairly and supports removal', a
   const persisted=await (await call('/progression','GET',undefined,lucas.cookie)).json();
   assert.equal(persisted.totalXp,3650,'reconhecimento fica salvo sem POST sync do dono');
   assert.equal(await db.collection('user_xp_credits').countDocuments({ownerId:lucasId}),73,'consultas concorrentes não duplicam XP');
+  // Totais públicos não duplicam filmes e incluem o tempo de jogos ainda em andamento.
+  await db.collection('library_items').insertMany([
+    {ownerId:lucasId,kind:'movie',status:'completed',title:'Filme privado',runtime:120,archived:true},
+    {ownerId:lucasId,kind:'movie',status:'completed',title:'Filme privado',runtime:100},
+    {ownerId:lucasId,kind:'movie',status:'completed',title:'Sem duração',catalogId:'tmdb:movie:2'},
+    {ownerId:lucasId,kind:'movie',status:'planned',title:'Ainda não visto',runtime:90},
+    {ownerId:lucasId,kind:'game',status:'active',title:'Em andamento',playtimeMinutes:125},
+    {ownerId:lucasId,kind:'game',status:'planned',title:'Arquivado com sessões',archived:true,playtimeMinutes:35},
+  ]);
+  const consumption=await (await call('/friends?scope=all','GET',undefined,a.cookie)).json();
+  const totals=consumption.ranking.find(row=>row.id===lucas.id);
+  assert.equal(totals.movies,2); assert.equal(totals.movieMinutes,120);
+  assert.equal(totals.gameMinutes,160); assert.equal(totals.games,73);
+  assert.ok(!JSON.stringify(consumption).includes('Filme privado'));
 });
 
