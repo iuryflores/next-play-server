@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/iuryflores/next-play-server/compare/v1.1.0...v1.2.0) (2026-11-27)
+
+
+### Features
+
+* amplia filtros e acompanhamento e prepara piloto Mercado Livre ([5bf88dc](https://github.com/iuryflores/next-play-server/commit/5bf88dc08d8985670999c1aae4d6d8e068f0fd5e))
+
 ## [1.1.0](https://github.com/iuryflores/next-play-server/compare/v1.0.0...v1.1.0) (2026-11-04)
 
 
