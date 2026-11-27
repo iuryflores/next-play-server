@@ -9,12 +9,49 @@ import type { Request } from 'express';
 import { AuthModule } from '../auth/auth.module';
 import { AuthService } from '../auth/auth.service';
 import { getConfig } from '../config';
+import { communityRatings } from '../community/title-ratings';
+import { brazilianAgeBands, brazilianAgeRating, type BrazilianAge } from './age-rating';
+import { catalogGroupName, groupName, parseGroupFilters, type GroupFilters } from './title-groups';
 
 export type CatalogKind = 'movie' | 'series' | 'game';
 export type ProductionCompany = { id: number; name: string; logoUrl?: string | null };
-export interface CatalogTitle { parentGameCatalogId?: string; platforms?: string[]; productionCompanies?: ProductionCompany[]; catalogId: string; kind: CatalogKind; title: string; originalTitle?: string; year: string; runtime?: number | null; releaseDate?: string; unreleased?: boolean; coverUrl: string; overview: string; sourceUrl: string; genres?: string[]; }
-type TmdbItem = { production_companies?: { id: number; name: string; logo_path?: string | null }[]; runtime?: number; status?: string; id: number; title?: string; name?: string; original_title?: string; original_name?: string; poster_path?: string; overview?: string; release_date?: string; first_air_date?: string; adult?: boolean; genres?: { id: number; name: string }[] };
-type IgdbItem = { parent_game?: number; platforms?: { name: string; abbreviation?: string }[]; game_localizations?: { name?: string; region?: { identifier?: string } }[]; id: number; name: string; summary?: string; first_release_date?: number; cover?: { image_id: string }; slug?: string; genres?: { id: number; name: string }[] };
+type RatingSource = 'critic' | 'community' | 'personal';
+type RatingFilter = { source: RatingSource; minimum: number; owner: string };
+const offerTypes = {
+  subscription: ['flatrate'], free: ['free', 'ads'], rent: ['rent'], buy: ['buy'],
+} as const;
+type StreamingFilter = { country: string; ids: number[]; types: string[] };
+type OriginFilter = { originalLanguage?: string; originCountry?: string };
+type OriginOptions = { languages: string[]; countries: string[] };
+type ResolvedGroups = { movieParts?: TmdbItem[]; keywords: number[]; gameFranchises?: number[]; empty: boolean };
+export interface CatalogTitle { parentGameCatalogId?: string; platforms?: string[]; productionCompanies?: ProductionCompany[]; catalogId: string; kind: CatalogKind; title: string; originalTitle?: string; originalLanguage?: string; originCountries?: string[]; year: string; runtime?: number | null; releaseDate?: string; unreleased?: boolean; coverUrl: string; overview: string; sourceUrl: string; genres?: string[]; rating?: number; ageRating?: BrazilianAge; }
+type TmdbItem = { original_language?: string; origin_country?: string[]; production_countries?: { iso_3166_1: string }[]; production_companies?: { id: number; name: string; logo_path?: string | null }[]; runtime?: number; status?: string; id: number; title?: string; name?: string; original_title?: string; original_name?: string; poster_path?: string; overview?: string; release_date?: string; first_air_date?: string; adult?: boolean; genres?: { id: number; name: string }[] };
+type IgdbItem = { parent_game?: number; platforms?: { name: string; abbreviation?: string }[]; game_localizations?: { name?: string; region?: { identifier?: string } }[]; id: number; name: string; summary?: string; first_release_date?: number; cover?: { image_id: string }; slug?: string; genres?: { id: number; name: string }[]; aggregated_rating?: number; aggregated_rating_count?: number; involved_companies?: { developer?: boolean; company?: { name?: string } }[] };
+
+function parseRatingFilter(source: unknown, minimum: unknown, owner: string): RatingFilter | undefined {
+  if (source === undefined && minimum === undefined) return undefined;
+  if (source !== 'critic' && source !== 'community' && source !== 'personal')
+    throw new BadRequestException('Escolha uma fonte de avaliação válida.');
+  if (typeof minimum !== 'string' || !/^[0-9]{1,3}(\.[0-9]{1,2})?$/.test(minimum))
+    throw new BadRequestException('Informe uma avaliação mínima válida.');
+  const value = Number(minimum);
+  if (source === 'critic' ? value > 100 : value < 1 || value > 5 || (source === 'personal' && !Number.isInteger(value)))
+    throw new BadRequestException('Avaliação fora da escala da fonte selecionada.');
+  return { source, minimum: value, owner };
+}
+
+function parseStreamingFilter(kind: string, ids: unknown, country: unknown, access: unknown): StreamingFilter | undefined {
+  if (ids === undefined && country === undefined && access === undefined) return undefined;
+  if (!['movie', 'series'].includes(kind) || typeof country !== 'string' || !/^[A-Z]{2}$/.test(country) ||
+      (ids === undefined && access === undefined) ||
+      (ids !== undefined && (typeof ids !== 'string' || !/^[1-9]\d{0,8}(,[1-9]\d{0,8}){0,7}$/.test(ids))) ||
+      (access !== undefined && (typeof access !== 'string' || !/^(subscription|free|rent|buy)(,(subscription|free|rent|buy)){0,3}$/.test(access))))
+    throw new BadRequestException('Selecione um país e serviços ou modalidades válidos para filmes e séries.');
+  const modes = typeof access === 'string' ? access.split(',') as (keyof typeof offerTypes)[] : ['subscription'] as const;
+  // Mantém a assinatura como padrão para a seleção de serviços feita no S021.
+  return { country, ids: typeof ids === 'string' ? [...new Set(ids.split(',').map(Number))] : [],
+    types: [...new Set(modes.flatMap(mode => [...offerTypes[mode]]))] };
+}
 class CatalogDetailsQuery {
   @ApiProperty({ example: 'tmdb:movie:11', pattern: '^(tmdb:(movie|series)|igdb:game):[1-9][0-9]{0,14}$', description: 'Referência pública de filme, série ou jogo; não aceita URLs nem IDs de itens privados.' })
   @IsString() @Matches(/^(tmdb:(movie|series)|igdb:game):[1-9]\d{0,14}$/) catalogId!: string;
@@ -329,7 +366,17 @@ export class CatalogService {
   }
   private movie(item: TmdbItem, kind: 'movie' | 'series'): CatalogTitle {
     const path = item.poster_path || '';
-    return { productionCompanies: item.production_companies ? [...new Map(item.production_companies.filter(company => Number.isSafeInteger(company.id) && company.id > 0 && typeof company.name === 'string' && company.name.trim()).map(company => [company.id, { id: company.id, name: company.name.trim().slice(0, 200), logoUrl: /^\/[A-Za-z0-9_.-]+$/.test(company.logo_path || '') ? 'https://image.tmdb.org/t/p/w185' + company.logo_path : null }])).values()] : undefined, catalogId: `tmdb:${kind}:${item.id}`, kind, runtime: kind === 'movie' && typeof item.runtime === 'number' && item.runtime > 0 ? item.runtime : null, releaseDate: item.release_date || item.first_air_date || '', unreleased: ['Rumored', 'Planned', 'In Production', 'Post Production', 'Pilot'].includes(item.status || ''), originalTitle: (item.original_title || item.original_name || '').slice(0, 200), genres: (item.genres || []).map(g => g.name), title: (item.title || item.name || 'Sem título').slice(0, 200), year: (item.release_date || item.first_air_date || '').slice(0, 4), overview: (item.overview || '').slice(0, 4000), coverUrl: /^\/[A-Za-z0-9_.-]+$/.test(path) ? `https://image.tmdb.org/t/p/w342${path}` : '', sourceUrl: `https://www.themoviedb.org/${kind === 'movie' ? 'movie' : 'tv'}/${item.id}` };
+    // A estreia da série é a primeira exibição, mesmo se houver outra data no catálogo.
+    const releaseDate = (kind === 'series' ? item.first_air_date : item.release_date) || '';
+    // Para filmes sem origem explícita, os detalhes do TMDB informam os países de produção.
+    const origin = Array.isArray(item.origin_country) && item.origin_country.length
+      ? item.origin_country
+      : kind === 'movie' && Array.isArray(item.production_countries)
+        ? item.production_countries.map(country => country?.iso_3166_1) : [];
+    const originCountries = [...new Set(origin.filter(code => typeof code === 'string' && /^[A-Z]{2}$/.test(code)))];
+    const originalLanguage = typeof item.original_language === 'string' && /^[a-z]{2}$/.test(item.original_language)
+      ? item.original_language : undefined;
+    return { ...(originalLanguage ? { originalLanguage } : {}), ...(originCountries.length ? { originCountries } : {}), productionCompanies: item.production_companies ? [...new Map(item.production_companies.filter(company => Number.isSafeInteger(company.id) && company.id > 0 && typeof company.name === 'string' && company.name.trim()).map(company => [company.id, { id: company.id, name: company.name.trim().slice(0, 200), logoUrl: /^\/[A-Za-z0-9_.-]+$/.test(company.logo_path || '') ? 'https://image.tmdb.org/t/p/w185' + company.logo_path : null }])).values()] : undefined, catalogId: `tmdb:${kind}:${item.id}`, kind, runtime: kind === 'movie' && typeof item.runtime === 'number' && item.runtime > 0 ? item.runtime : null, releaseDate, unreleased: ['Rumored', 'Planned', 'In Production', 'Post Production', 'Pilot'].includes(item.status || ''), originalTitle: (item.original_title || item.original_name || '').slice(0, 200), genres: (item.genres || []).map(g => g.name), title: (item.title || item.name || 'Sem título').slice(0, 200), year: releaseDate.slice(0, 4), overview: (item.overview || '').slice(0, 4000), coverUrl: /^\/[A-Za-z0-9_.-]+$/.test(path) ? `https://image.tmdb.org/t/p/w342${path}` : '', sourceUrl: `https://www.themoviedb.org/${kind === 'movie' ? 'movie' : 'tv'}/${item.id}` };
   }
   private game(item: IgdbItem, language = 'pt-BR'): CatalogTitle {
     const image = item.cover?.image_id || '';
@@ -413,7 +460,322 @@ export class CatalogService {
     this.genreCache.set(key, { expires: Date.now() + 86400000, values });
     return values;
   }
-  async browse(kind: string, language: string, page = 1, genreText = '', company = '', query = '', platform?: number) {
+  private streamingCache = new Map<string, { expires: number; providers: { id: number; name: string }[] }>();
+  async streamingProviders(kind: string, country: string, language: string) {
+    if (!['movie', 'series'].includes(kind) || typeof country !== 'string' || !/^[A-Z]{2}$/.test(country))
+      throw new BadRequestException('Escolha filmes ou séries e um país válido.');
+    const key = `${kind}:${country}:${language}`;
+    const cached = this.streamingCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.providers;
+    const data = await this.tmdb<{ results: { provider_id: number; provider_name: string }[] }>(
+      `watch/providers/${kind === 'movie' ? 'movie' : 'tv'}`, { watch_region: country, language },
+    );
+    if (!Array.isArray(data?.results)) throw new BadGatewayException('Resposta inválida dos serviços de streaming.');
+    const providers = [...new Map(data.results
+      .filter(row => row && Number.isSafeInteger(row.provider_id) && row.provider_id > 0 && typeof row.provider_name === 'string' && row.provider_name.trim())
+      .map(row => [row.provider_id, { id: row.provider_id, name: row.provider_name.trim().slice(0, 160) }])).values()];
+    if (this.streamingCache.size >= 256) this.streamingCache.delete(this.streamingCache.keys().next().value!);
+    this.streamingCache.set(key, { expires: Date.now() + 6 * 3600000, providers });
+    return providers;
+  }
+
+  private originDirectory?: { expires: number; value: OriginOptions };
+  private originDirectoryPending?: Promise<OriginOptions>;
+  async originOptions(): Promise<OriginOptions> {
+    if (this.originDirectory && this.originDirectory.expires > Date.now()) return this.originDirectory.value;
+    if (this.originDirectoryPending) return this.originDirectoryPending;
+    const load = async () => {
+      const [languages, countries] = await Promise.all([
+        this.tmdb<{ iso_639_1: string }[]>('configuration/languages'),
+        this.tmdb<{ iso_3166_1: string }[]>('configuration/countries'),
+      ]);
+      if (!Array.isArray(languages) || !Array.isArray(countries))
+        throw new BadGatewayException('Resposta inválida do catálogo de idiomas e países.');
+      const value = {
+        languages: [...new Set(languages.map(row => row?.iso_639_1).filter(code => typeof code === 'string' && /^[a-z]{2}$/.test(code)))],
+        countries: [...new Set(countries.map(row => row?.iso_3166_1).filter(code => typeof code === 'string' && /^[A-Z]{2}$/.test(code)))],
+      };
+      // Os códigos são comuns aos idiomas da interface; o cliente traduz os rótulos.
+      this.originDirectory = { value, expires: Date.now() + 86400000 };
+      return value;
+    };
+    this.originDirectoryPending = load().finally(() => { this.originDirectoryPending = undefined; });
+    return this.originDirectoryPending;
+  }
+  private ageRatingCache = new Map<string, { expires: number; value: Promise<BrazilianAge | null> }>();
+  private ageRating(catalogId: string) {
+    const cached = this.ageRatingCache.get(catalogId);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    const [, kind, id] = catalogId.split(':');
+    const path = kind === 'movie' ? `movie/${id}/release_dates` : `tv/${id}/content_ratings`;
+    const value = this.tmdb<{ results: Parameters<typeof brazilianAgeRating>[0] }>(path).then(data => {
+      if (!Array.isArray(data?.results)) throw new BadGatewayException('Resposta inválida da classificação indicativa.');
+      return brazilianAgeRating(data.results, kind === 'movie' ? 'movie' : 'series');
+    }).catch(error => {
+      // Falha do provedor pode ser tentada novamente e não equivale a ausência de classificação.
+      this.ageRatingCache.delete(catalogId);
+      throw error;
+    });
+    if (this.ageRatingCache.size >= 2000) this.ageRatingCache.delete(this.ageRatingCache.keys().next().value!);
+    this.ageRatingCache.set(catalogId, { expires: Date.now() + 6 * 3600000, value });
+    return value;
+  }
+  private groupCache = new Map<string, { expires: number; value: Promise<ResolvedGroups> }>();
+  private resolveGroups(kind: string, language: string, filters: GroupFilters) {
+    const key = JSON.stringify([kind, language, filters.franchise, filters.universe]);
+    const cached = this.groupCache.get(key);
+    if (cached && cached.expires > Date.now()) return cached.value;
+    const value = this.loadGroups(kind, language, filters).catch(error => {
+      this.groupCache.delete(key);
+      throw error;
+    });
+    this.groupCache.set(key, { expires: Date.now() + 600000, value });
+    if (this.groupCache.size > 256) this.groupCache.delete(this.groupCache.keys().next().value!);
+    return value;
+  }
+
+  private async loadGroups(kind: string, language: string, { franchise, universe }: GroupFilters): Promise<ResolvedGroups> {
+    if (kind === 'game') {
+      if (universe) return { empty: true, keywords: [] };
+      const term = catalogGroupName(franchise ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const rows = await this.igdb<{ id: number }[]>(`fields name; where name ~ *"${term}"*; limit 20;`, 'franchises');
+      if (!Array.isArray(rows)) throw new BadGatewayException('Resposta inválida de franquias da IGDB.');
+      const gameFranchises = rows.map(row => row.id).filter(id => Number.isSafeInteger(id) && id > 0);
+      return { empty: !gameFranchises.length, keywords: [], gameFranchises };
+    }
+    const keywordTerms = [kind === 'series' ? franchise : undefined, universe].filter((term): term is string => Boolean(term));
+    const keywords = await Promise.all(keywordTerms.map(async value => {
+      const name = catalogGroupName(value);
+      const data = await this.tmdb<{ results: { id: number; name: string }[] }>('search/keyword', { query: name, page: '1' });
+      if (!Array.isArray(data?.results)) throw new BadGatewayException('Resposta inválida de etiquetas do TMDB.');
+      return data.results.find(row => Number.isSafeInteger(row.id) && row.id > 0 &&
+        typeof row.name === 'string' && groupName(catalogGroupName(row.name)) === groupName(name))?.id;
+    }));
+    if (keywords.some(id => id === undefined)) return { empty: true, keywords: [] };
+    const resolved = { empty: false, keywords: [...new Set(keywords as number[])] };
+    if (kind !== 'movie' || !franchise) return resolved;
+    const name = catalogGroupName(franchise);
+    const data = await this.tmdb<{ results: { id: number; name: string }[] }>('search/collection', {
+      language, query: name, page: '1', include_adult: 'false',
+    });
+    if (!Array.isArray(data?.results)) throw new BadGatewayException('Resposta inválida de franquias do TMDB.');
+    // A coleção fornece membros explícitos, incluindo filmes cujo título não menciona a franquia.
+    const collections = [...new Set(data.results.filter(row => Number.isSafeInteger(row.id) && row.id > 0 &&
+      typeof row.name === 'string' && [name, franchise].some(term => groupName(row.name).includes(groupName(term)))).map(row => row.id))].slice(0, 5);
+    const parts = await Promise.all(collections.map(async id => {
+      const result = await this.tmdb<{ parts: TmdbItem[] }>('collection/' + id, { language });
+      if (!Array.isArray(result?.parts)) throw new BadGatewayException('Resposta inválida de membros da franquia.');
+      return result.parts;
+    }));
+    const movieParts = [...new Map(parts.flat().filter(row => Number.isSafeInteger(row.id) && row.id > 0 && !row.adult).map(row => [row.id, row])).values()];
+    return { ...resolved, empty: !movieParts.length, movieParts };
+  }
+
+  private gameFranchiseFilter(ids: number[]) {
+    return `(franchise = (${ids.join(',')}) | franchises = (${ids.join(',')}))`;
+  }
+
+  private groupKeywordCache = new Map<string, { expires: number; value: number[] }>();
+  private async matchesKeywords(catalogId: string, keywords: number[]) {
+    const cached = this.groupKeywordCache.get(catalogId);
+    if (cached && cached.expires > Date.now()) return keywords.every(id => cached.value.includes(id));
+    const [, kind, id] = catalogId.split(':');
+    const data = await this.tmdb<{ keywords?: { id: number }[]; results?: { id: number }[] }>(
+      `${kind === 'movie' ? 'movie' : 'tv'}/${id}/keywords`,
+    );
+    const rows = kind === 'movie' ? data?.keywords : data?.results;
+    if (!Array.isArray(rows)) throw new BadGatewayException('Resposta inválida de etiquetas do título.');
+    const value = rows.map(row => row.id).filter(id => Number.isSafeInteger(id) && id > 0);
+    if (this.groupKeywordCache.size >= 2000) this.groupKeywordCache.delete(this.groupKeywordCache.keys().next().value!);
+    this.groupKeywordCache.set(catalogId, { expires: Date.now() + 3600000, value });
+    return keywords.every(keyword => value.includes(keyword));
+  }
+
+  async browse(kind: string, language: string, page = 1, genreText = '', company = '', query = '', platform?: number, year?: string, rating?: RatingFilter, streaming?: StreamingFilter, origin: OriginFilter = {}, maxAge?: string, groups: GroupFilters = {}) {
+    const age = brazilianAgeBands.find(band => String(band) === maxAge);
+    if (maxAge !== undefined && (age === undefined || (kind !== 'movie' && kind !== 'series')))
+      throw new BadRequestException('Escolha uma classificação indicativa brasileira válida para filmes e séries.');
+    const data = await this.browsePage(kind, language, page, genreText, company, query, platform, year, rating, streaming, origin, groups);
+    let results = rating && data.results.length ? await this.filterRatings(data.results, rating) : data.results;
+    if (age !== undefined && results.length) {
+      // As classificações de séries e filmes são conferidas pela mesma regra brasileira em cada página.
+      const classified: CatalogTitle[] = [];
+      for (let start = 0; start < results.length; start += 10) {
+        const batch = await Promise.all(results.slice(start, start + 10).map(async title => {
+          const ageRating = await this.ageRating(title.catalogId);
+          return ageRating !== null && ageRating <= age ? { ...title, ageRating } : null;
+        }));
+        for (const title of batch) if (title) classified.push(title);
+      }
+      results = classified;
+    }
+    if (streaming && (query.trim() || streaming.ids.length || (kind === 'movie' && groups.franchise)) && results.length) {
+      // Confirma a mesma oferta: um título pode ter aluguel em uma loja e assinatura em outra.
+      const matching = await Promise.all(results.map(row => this.matchesStreaming(row.catalogId, streaming)));
+      results = results.filter((_, index) => matching[index]);
+    }
+    return { ...data, results };
+  }
+  private async matchesStreaming(catalogId: string, filter: StreamingFilter) {
+    const availability: { groups: { type: string; providers: { id: number }[] }[] } =
+      await this.availability(catalogId, filter.country);
+    return availability.groups.some(group => filter.types.includes(group.type) &&
+      group.providers.some(provider => !filter.ids.length || filter.ids.includes(provider.id)));
+  }
+  private async filterRatings(titles: CatalogTitle[], filter: RatingFilter) {
+    const keys = titles.map(title => title.catalogId);
+    const values = new Map<string, number | null | undefined>();
+    if (filter.source === 'community') {
+      const ratings = await communityRatings(this.connection, keys);
+      for (const [key, value] of ratings) values.set(key, value.average);
+    } else if (filter.source === 'personal') {
+      // A sessão define o dono; zeros e registros antigos nunca substituem a última nota.
+      const rows = await this.connection.collection('library_items').find({
+        ownerId: new Types.ObjectId(filter.owner), catalogKey: { $in: keys },
+      }, { projection: { catalogKey: 1, stars: 1 } }).sort({ updatedAt: -1, _id: -1 }).toArray();
+      for (const row of rows) {
+        if (!values.has(row.catalogKey)) values.set(row.catalogKey, [1, 2, 3, 4, 5].includes(row.stars) ? row.stars : null);
+      }
+    } else if (titles[0].kind === 'game') {
+      for (const title of titles) values.set(title.catalogId, title.rating);
+    } else {
+      for (const [key, score] of await this.storedCriticRatings(keys)) values.set(key, score);
+    }
+    const maximum = filter.source === 'critic' ? 100 : 5;
+    return titles.flatMap(title => {
+      const rating = values.get(title.catalogId);
+      return typeof rating === 'number' && rating >= filter.minimum && rating <= maximum ? [{ ...title, rating }] : [];
+    });
+  }
+  private async storedCriticRatings(keys: string[]) {
+    // Usa somente vínculos inequívocos já confirmados pela integração Rotten Tomatoes.
+    const rows = await this.connection.collection<{ _id: string; value?: { tomatometer?: number } }>('catalog_critic_scores')
+      .find({ _id: { $in: keys } }, { projection: { 'value.tomatometer': 1 } }).toArray();
+    return new Map(rows.map(row => [row._id, row.value?.tomatometer]));
+  }
+  async collectionFilters(keys: string[], companies: boolean, source?: 'critic' | 'community', origin = false, streaming?: StreamingFilter, includeAgeRating = false, groups: GroupFilters = {}, language = 'pt-BR') {
+    const games = keys.filter(key => key.startsWith('igdb:'));
+    const screens = keys.filter(key => key.startsWith('tmdb:'));
+    type Metadata = { companies?: string[]; rating?: number | null; originalLanguage?: string; originCountries?: string[]; streamingMatch?: boolean; ageRating?: BrazilianAge | null; groupsMatch?: boolean };
+    const metadata = new Map<string, Metadata>(keys.map(key => [key, {}]));
+    let incomplete = false;
+    await Promise.all([
+      (async () => {
+        if (!groups.franchise && !groups.universe) return;
+        await Promise.all((['movie', 'series', 'game'] as const).map(async kind => {
+          const references = kind === 'game' ? games : screens.filter(key => key.startsWith(`tmdb:${kind}:`));
+          if (!references.length) return;
+          try {
+            const resolved = await this.resolveGroups(kind, language, groups);
+            const parts = resolved.movieParts && new Set(resolved.movieParts.map(row => `tmdb:movie:${row.id}`));
+            let gamesInFranchise: Set<string> | undefined;
+            if (!resolved.empty && resolved.gameFranchises) {
+              // As cópias da mesma obra reutilizam uma única confirmação de vínculo por lote.
+              const rows = await this.igdb<{ id: number }[]>(`fields id; where id = (${references.map(key => key.split(':')[2]).join(',')}) & ${this.gameFranchiseFilter(resolved.gameFranchises)}; limit ${references.length};`);
+              if (!Array.isArray(rows)) throw new BadGatewayException('Resposta inválida de vínculos da IGDB.');
+              gamesInFranchise = new Set(rows.map(row => `igdb:game:${row.id}`));
+            }
+            for (let index = 0; index < references.length; index += 10) {
+              await Promise.all(references.slice(index, index + 10).map(async key => {
+                try {
+                  metadata.get(key)!.groupsMatch = !resolved.empty && (!parts || parts.has(key)) &&
+                    (!gamesInFranchise || gamesInFranchise.has(key)) &&
+                    (!resolved.keywords.length || await this.matchesKeywords(key, resolved.keywords));
+                } catch {
+                  incomplete = true;
+                }
+              }));
+            }
+          } catch {
+            incomplete = true;
+          }
+        }));
+      })(),
+      (async () => {
+        if (!includeAgeRating) return;
+        // A faixa brasileira vem do mesmo cache usado pelo catálogo, por obra e não por exemplar.
+        for (let index = 0; index < screens.length; index += 10) {
+          await Promise.all(screens.slice(index, index + 10).map(async key => {
+            try {
+              metadata.get(key)!.ageRating = await this.ageRating(key);
+            } catch {
+              incomplete = true;
+            }
+          }));
+        }
+      })(),
+      (async () => {
+        if (!streaming) return;
+        // Reusa o cache de disponibilidade por obra e país, com concorrência limitada por lote.
+        for (let index = 0; index < screens.length; index += 10) {
+          await Promise.all(screens.slice(index, index + 10).map(async key => {
+            try {
+              metadata.get(key)!.streamingMatch = await this.matchesStreaming(key, streaming);
+            } catch {
+              incomplete = true;
+            }
+          }));
+        }
+      })(),
+      (async () => {
+        if (source === 'community') {
+          for (const [key, value] of await communityRatings(this.connection, keys))
+            metadata.get(key)!.rating = value.average;
+        } else if (source === 'critic' && screens.length) {
+          for (const [key, value] of await this.storedCriticRatings(screens))
+            metadata.get(key)!.rating = value;
+        }
+      })(),
+      (async () => {
+        if (!games.length || (!companies && source !== 'critic')) return;
+        try {
+          const fields = [
+            companies ? 'involved_companies.developer,involved_companies.company.name' : '',
+            source === 'critic' ? 'aggregated_rating,aggregated_rating_count' : '',
+          ].filter(Boolean).join(',');
+          const results = await this.igdb(`fields ${fields}; where id = (${games.map(key => key.split(':')[2]).join(',')}); limit ${games.length};`);
+          if (!Array.isArray(results)) throw new BadGatewayException('Resposta inválida da IGDB.');
+          for (const row of results) {
+            const item = metadata.get(`igdb:game:${row.id}`);
+            if (!item) continue;
+            if (companies) item.companies = [...new Set((row.involved_companies || [])
+              .flatMap(entry => entry.developer && entry.company?.name ? [entry.company.name] : []))];
+            if (source === 'critic' && (row.aggregated_rating_count ?? 0) > 0) item.rating = row.aggregated_rating;
+          }
+        } catch {
+          incomplete = true;
+        }
+      })(),
+      (async () => {
+        if ((!companies && !origin) || !screens.length) return;
+        if (companies) {
+          const stored = await this.connection.collection<{ key: string; productionCompanies?: ProductionCompany[] }>('catalog_titles')
+            .find({ key: { $in: screens }, productionCompanies: { $exists: true } }, { projection: { key: 1, productionCompanies: 1 } }).toArray();
+          for (const row of stored) if (Array.isArray(row.productionCompanies))
+            metadata.get(row.key)!.companies = row.productionCompanies.map(company => company.name);
+        }
+        const missing = screens.filter(key => origin || metadata.get(key)!.companies === undefined);
+        // Reaproveita os detalhes do catálogo para obras antigas e resolve cada obra uma vez por lote.
+        for (let index = 0; index < missing.length; index += 5) {
+          await Promise.all(missing.slice(index, index + 5).map(async key => {
+            try {
+              const title = await this.detail(key);
+              const row = metadata.get(key)!;
+              if (companies) row.companies ??= title.productionCompanies?.map(company => company.name) ?? [];
+              if (origin) {
+                row.originalLanguage = title.originalLanguage;
+                row.originCountries = title.originCountries;
+              }
+            } catch {
+              incomplete = true;
+            }
+          }));
+        }
+      })(),
+    ]);
+    return { titles: keys.map(catalogId => ({ catalogId, ...metadata.get(catalogId) })), incomplete };
+  }
+  private async browsePage(kind: string, language: string, page: number, genreText: string, company: string, query: string, platform: number | undefined, year: string | undefined, rating: RatingFilter | undefined, streaming: StreamingFilter | undefined, { originalLanguage, originCountry }: OriginFilter, groups: GroupFilters) {
     if (!['movie', 'series', 'game'].includes(kind) || !Number.isInteger(page) || page < 1 || page > 500)
       throw new BadRequestException('Categoria ou página inválida.');
     if (typeof genreText !== 'string' || (genreText && !/^[1-9]\d{0,8}(,[1-9]\d{0,8}){0,7}$/.test(genreText)))
@@ -423,9 +785,22 @@ export class CatalogService {
     if (typeof query !== 'string' || query.length > 100 || query.trim().length === 1)
       throw new BadRequestException('Busca deve ter entre 2 e 100 caracteres.');
     if (platform !== undefined && (kind !== 'game' || !Number.isSafeInteger(platform) || platform < 1)) throw new BadRequestException('Plataforma inválida.');
+    if (year !== undefined && (typeof year !== 'string' || !/^[1-9][0-9]{3}$/.test(year)))
+      throw new BadRequestException('Informe um ano de lançamento com quatro dígitos.');
+    if ((originalLanguage !== undefined && (kind === 'game' || typeof originalLanguage !== 'string' || !/^[a-z]{2}$/.test(originalLanguage))) ||
+        (originCountry !== undefined && (kind === 'game' || typeof originCountry !== 'string' || !/^[A-Z]{2}$/.test(originCountry))))
+      throw new BadRequestException('Informe idioma original ou país de origem válidos para filmes e séries.');
+    const resolved = groups.franchise || groups.universe ? await this.resolveGroups(kind, language, groups) : undefined;
+    if (resolved?.empty) return { results: [], nextPage: null };
+    const criticMinimum = rating?.source === 'critic' && kind === 'game' ? rating.minimum : undefined;
     const directory = await this.genres(kind, language);
     const ids = [...new Set(genreText ? genreText.split(',').map(Number) : [])];
     if (ids.some(id => !directory.some(g => g.id === id))) throw new BadRequestException('Gênero inválido para esta categoria.');
+    if (streaming?.ids.length) {
+      const available = await this.streamingProviders(kind, streaming.country, language);
+      if (streaming.ids.some(id => !available.some(provider => provider.id === id)))
+        throw new BadRequestException('Serviço de streaming inválido para esta categoria ou país.');
+    }
     const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
     let companyIds: number[] = [];
     if (company.trim()) {
@@ -435,46 +810,102 @@ export class CatalogService {
       // Uma produtora não encontrada não pode ampliar silenciosamente a consulta para todo o catálogo.
       if (!companyIds.length) return { results: [], nextPage: null };
     }
-    if (query.trim()) {
-      const data = await this.search(kind, query, language, page, platform);
-      // Busca textual não oferece os filtros de descoberta; confirma os metadados antes de incluir cada resultado.
-      const titles = ids.length || companyIds.length
-        ? await Promise.all(data.results.map(row => this.detail(row.catalogId, language))) : data.results;
+    if (query.trim() || resolved?.movieParts) {
+      let data: { results: CatalogTitle[]; nextPage: number | null };
+      if (resolved?.movieParts && !query.trim()) {
+        const matching = resolved.movieParts
+          .map(row => this.movie(row, 'movie'))
+          .filter(row => !year || row.year === year);
+        data = { results: matching.slice((page - 1) * 20, page * 20), nextPage: page < 500 && matching.length > page * 20 ? page + 1 : null };
+      } else {
+        data = await this.search(kind, query, language, page, platform, year, criticMinimum, resolved?.gameFranchises);
+        if (resolved?.movieParts) {
+          // Mantém a busca por título ou produtora e cruza os resultados com os membros da coleção.
+          const members = new Set(resolved.movieParts.map(row => `tmdb:movie:${row.id}`));
+          data = { ...data, results: data.results.filter(row => members.has(row.catalogId)) };
+        }
+      }
+      // Gênero e produtora podem exigir detalhes; confirma também o ano depois de carregar os metadados.
+      // A busca textual não aceita esses filtros. Se faltar a origem na página, consulta os detalhes.
+      const candidates = data.results.filter(row => (!originalLanguage || !row.originalLanguage || row.originalLanguage === originalLanguage) &&
+        (!originCountry || !row.originCountries?.length || row.originCountries.includes(originCountry)));
+      const titles = await Promise.all(candidates.map(async row => {
+        if (!ids.length && !companyIds.length && !(originalLanguage && !row.originalLanguage) &&
+            !(originCountry && !row.originCountries?.length)) return row;
+        const details = await this.detail(row.catalogId, language);
+        return {
+          ...details,
+          originalLanguage: row.originalLanguage ?? details.originalLanguage,
+          originCountries: row.originCountries?.length ? row.originCountries : details.originCountries,
+          ...(row.rating === undefined ? {} : { rating: row.rating }),
+        };
+      }));
       const names = directory.filter(g => ids.includes(g.id)).map(g => normalize(g.name));
-      return { ...data, results: titles.filter(row => (!ids.length || row.genres?.some(g => names.includes(normalize(g)))) && (!companyIds.length || row.productionCompanies?.some(c => companyIds.includes(c.id)))) };
+      let results = titles.filter(row => (!year || row.year === year) &&
+        (!originalLanguage || row.originalLanguage === originalLanguage) && (!originCountry || row.originCountries?.includes(originCountry)) &&
+        (!ids.length || row.genres?.some(g => names.includes(normalize(g)))) && (!companyIds.length || row.productionCompanies?.some(c => companyIds.includes(c.id))));
+      if (resolved?.keywords.length) {
+        const membership = await Promise.all(results.map(row => this.matchesKeywords(row.catalogId, resolved.keywords)));
+        results = results.filter((_, index) => membership[index]);
+      }
+      return { ...data, results };
     }
     if (kind === 'game') {
-      const rows = await this.igdb(`fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation; where cover != null${ids.length ? ` & genres = (${ids.join(',')})` : ''}${platform ? ` & platforms = (${platform})` : ''}; sort rating desc; limit 21; offset ${(page - 1) * 20};`);
+      const rows = await this.igdb(`fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation${criticMinimum === undefined ? '' : ',aggregated_rating'}; where cover != null${ids.length ? ` & genres = (${ids.join(',')})` : ''}${platform ? ` & platforms = (${platform})` : ''}${year ? ' & ' + this.gameYearFilter(year) : ''}${criticMinimum === undefined ? '' : ' & ' + this.gameCriticFilter(criticMinimum)}${resolved?.gameFranchises ? ' & ' + this.gameFranchiseFilter(resolved.gameFranchises) : ''}; sort rating desc; limit 21; offset ${(page - 1) * 20};`);
       if (!Array.isArray(rows)) throw new BadGatewayException('Resposta inválida do catálogo.');
-      return { results: rows.slice(0, 20).filter(row => Number.isSafeInteger(row.id) && typeof row.name === 'string').map(row => this.game(row, language)), nextPage: rows.length > 20 && page < 500 ? page + 1 : null };
+      return { results: rows.slice(0, 20).filter(row => Number.isSafeInteger(row.id) && typeof row.name === 'string').map(row => criticMinimum === undefined ? this.game(row, language) : { ...this.game(row, language), rating: row.aggregated_rating }).filter(row => !year || row.year === year), nextPage: rows.length > 20 && page < 500 ? page + 1 : null };
     }
     const data = await this.tmdb<{ results: (TmdbItem & { genre_ids?: number[] })[]; total_pages?: number }>(`discover/${kind === 'movie' ? 'movie' : 'tv'}`, {
       language, page: String(page), include_adult: 'false', sort_by: 'popularity.desc',
       ...(ids.length ? { with_genres: ids.join('|') } : {}),
       ...(companyIds.length ? { with_companies: companyIds.join('|') } : {}),
+      ...this.tmdbYearFilter(kind, year),
+      ...(originalLanguage ? { with_original_language: originalLanguage } : {}),
+      ...(originCountry ? { with_origin_country: originCountry } : {}),
+      ...(resolved?.keywords.length ? { with_keywords: resolved.keywords.join(',') } : {}),
+      // O pipe do Discover representa qualquer um dos serviços selecionados.
+      ...(streaming ? {
+        watch_region: streaming.country, with_watch_monetization_types: streaming.types.join('|'),
+        ...(streaming.ids.length ? { with_watch_providers: streaming.ids.join('|') } : {}),
+      } : {}),
     });
     if (!Array.isArray(data.results)) throw new BadGatewayException('Resposta inválida do catálogo.');
-    return { results: data.results.filter(row => Number.isSafeInteger(row.id) && !row.adult).map(row => this.movie({ ...row, genres: row.genres || directory.filter(g => row.genre_ids?.includes(g.id)) }, kind as 'movie' | 'series')), nextPage: page < Math.min(data.total_pages || 0, 500) ? page + 1 : null };
+    return { results: data.results.filter(row => Number.isSafeInteger(row.id) && !row.adult).map(row => this.movie({ ...row, genres: row.genres || directory.filter(g => row.genre_ids?.includes(g.id)) }, kind as 'movie' | 'series')).filter(row => !year || row.year === year), nextPage: page < Math.min(data.total_pages || 0, 500) ? page + 1 : null };
+  }
+  private tmdbYearFilter(kind: string, year?: string): Record<string, string> {
+    // O filtro genérico de séries no TMDB também considera datas de episódios.
+    return year ? { [kind === 'series' ? 'first_air_date_year' : 'primary_release_year']: year } : {};
+  }
+  private gameYearFilter(year: string) {
+    const start = Date.UTC(Number(year), 0, 1) / 1000;
+    const end = Date.UTC(Number(year) + 1, 0, 1) / 1000;
+    // O fim exclusivo inclui todo o último dia do ano, independentemente do fuso.
+    return `first_release_date >= ${start} & first_release_date < ${end}`;
+  }
+  private gameCriticFilter(minimum: number) {
+    // A IGDB oferece média da crítica separada das notas de usuários.
+    return `aggregated_rating_count > 0 & aggregated_rating >= ${minimum}`;
   }
   private searchCache = new Map<string, { expires: number; value: { results: CatalogTitle[]; nextPage: number | null } }>();
-  async search(kind: string, query: string, language = 'pt-BR', page = 1, platform?: number) {
+  async search(kind: string, query: string, language = 'pt-BR', page = 1, platform?: number, year?: string, criticMinimum?: number, gameFranchises?: number[]) {
     if (platform !== undefined && (kind !== 'game' || !Number.isSafeInteger(platform) || platform < 1)) throw new BadRequestException('Plataforma inválida.');
     if (!Number.isInteger(page) || page < 1 || page > 500) throw new BadRequestException('Página inválida.');
     if (!['movie', 'series', 'game'].includes(kind)) throw new BadRequestException('Escolha filmes, séries ou jogos. Livros continuam no cadastro manual.');
     if (typeof query !== 'string' || query.trim().length < 2 || query.length > 100) throw new BadRequestException('Digite entre 2 e 100 caracteres para buscar.');
-    const text = query.trim(); const key = `search:${kind}:${language}:${page}:${platform ?? 'all'}:${createHash('sha256').update(text.toLowerCase()).digest('hex')}`;
+    const text = query.trim(); const key = `search:${kind}:${language}:${page}:${platform ?? 'all'}:${year ?? 'all'}:${criticMinimum ?? 'all'}:${gameFranchises?.join(',') ?? 'all'}:${createHash('sha256').update(text.toLowerCase()).digest('hex')}`;
     for (const [id, entry] of this.searchCache) if (entry.expires < Date.now()) this.searchCache.delete(id);
     const cached = this.searchCache.get(key); if (cached) return cached.value;
     let nextPage: number | null = null;
     let results: CatalogTitle[];
     if (kind === 'game') {
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n\x00-\x1f]/g, ' ');
-      const data = await this.igdb(`search "${escaped}"; fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation,game_localizations.name,game_localizations.region.identifier; ${platform ? `where platforms = (${platform}); ` : ''}limit 21; offset ${(page - 1) * 20};`);
+      const filters = [platform ? `platforms = (${platform})` : '', year ? this.gameYearFilter(year) : '', criticMinimum === undefined ? '' : this.gameCriticFilter(criticMinimum), gameFranchises ? this.gameFranchiseFilter(gameFranchises) : ''].filter(Boolean);
+      const data = await this.igdb(`search "${escaped}"; fields name,summary,first_release_date,cover.image_id,slug,genres.name,platforms.name,platforms.abbreviation,game_localizations.name,game_localizations.region.identifier${criticMinimum === undefined ? '' : ',aggregated_rating'}; ${filters.length ? `where ${filters.join(' & ')}; ` : ''}limit 21; offset ${(page - 1) * 20};`);
       if (!Array.isArray(data)) throw new BadGatewayException('Resposta inválida do catálogo.');
       nextPage = data.length > 20 && page < 500 ? page + 1 : null;
-      results = data.slice(0, 20).filter(item => Number.isSafeInteger(item.id) && typeof item.name === 'string').map(item => this.game(item, language));
+      results = data.slice(0, 20).filter(item => Number.isSafeInteger(item.id) && typeof item.name === 'string').map(item => criticMinimum === undefined ? this.game(item, language) : { ...this.game(item, language), rating: item.aggregated_rating });
     } else {
-      const data = await this.tmdb<{ results: TmdbItem[]; total_pages?: number }>(`search/${kind === 'movie' ? 'movie' : 'tv'}`, { language, query: text, include_adult: 'false', page: String(page) });
+      const data = await this.tmdb<{ results: TmdbItem[]; total_pages?: number }>(`search/${kind === 'movie' ? 'movie' : 'tv'}`, { language, query: text, include_adult: 'false', page: String(page), ...this.tmdbYearFilter(kind, year) });
       if (!Array.isArray(data.results)) throw new BadGatewayException('Resposta inválida do catálogo.');
       results = data.results.filter(item => Number.isSafeInteger(item.id) && !item.adult).map(item => this.movie(item, kind as 'movie' | 'series'));
       nextPage = page < Math.min(data.total_pages || 0, 500) ? page + 1 : null;
@@ -483,14 +914,14 @@ export class CatalogService {
       const normalize = (name: string) => name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
       const companyIds = [...new Set(companies.results.filter(company => Number.isSafeInteger(company.id) && company.id > 0 && typeof company.name === 'string' && normalize(company.name).includes(normalize(text))).map(company => company.id))];
       if (companyIds.length) {
-        const productions = await this.tmdb<{ results: TmdbItem[]; total_pages?: number }>(`discover/${kind === 'movie' ? 'movie' : 'tv'}`, { language, page: String(page), include_adult: 'false', with_companies: companyIds.join('|'), sort_by: kind === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc' });
+        const productions = await this.tmdb<{ results: TmdbItem[]; total_pages?: number }>(`discover/${kind === 'movie' ? 'movie' : 'tv'}`, { language, page: String(page), include_adult: 'false', with_companies: companyIds.join('|'), sort_by: kind === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc', ...this.tmdbYearFilter(kind, year) });
         if (!Array.isArray(productions.results)) throw new BadGatewayException('Resposta inválida do catálogo.');
         results.push(...productions.results.filter(item => Number.isSafeInteger(item.id) && !item.adult).map(item => this.movie(item, kind as 'movie' | 'series')));
         if (page < Math.min(productions.total_pages || 0, 500)) nextPage = page + 1;
       }
       results = [...new Map(results.map(item => [item.catalogId, item])).values()];
     }
-    const value = { results, nextPage };
+    const value = { results: year ? results.filter(row => row.year === year) : results, nextPage };
     if (this.searchCache.size >= 500) this.searchCache.delete(this.searchCache.keys().next().value!);
     this.searchCache.set(key, { expires: Date.now() + 600000, value });
     return value;
@@ -558,6 +989,36 @@ export class CatalogService {
 @Controller('catalog')
 class CatalogController {
   constructor(private readonly service: CatalogService, private readonly auth: AuthService) {}
+  @Get('collection-filters')
+  @ApiOperation({ summary: 'Carregar metadados dos filtros de obras já adicionadas', description: 'Consulta por referência pública. Inclui a correspondência de franquia ou universo quando solicitada. Quando há serviços e modalidades selecionados, a mesma oferta deve satisfazer os dois. incomplete indica falha parcial de provedor.' })
+  @ApiQuery({ name: 'ids', type: String, description: 'De 1 a 25 IDs TMDB/IGDB separados por vírgula.' })
+  @ApiQuery({ name: 'companies', required: false, enum: ['1'] })
+  @ApiQuery({ name: 'origin', required: false, enum: ['1'], description: 'Inclui originalLanguage e originCountries quando informados pelo TMDB. Aplicável a filmes e séries.' })
+  @ApiQuery({ name: 'ageRating', required: false, enum: ['1'], description: 'Inclui a maior faixa brasileira reconhecida para cada filme ou série. 0 é Livre e null indica ausência de classificação reconhecida.' })
+  @ApiQuery({ name: 'streamingProviders', required: false, type: String, pattern: '^[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,7}$', description: 'Até oito IDs de serviços. Exige watchRegion.' })
+  @ApiQuery({ name: 'watchRegion', required: false, type: String, pattern: '^[A-Z]{2}$', description: 'País de disponibilidade. Exige serviços ou modalidades.' })
+  @ApiQuery({ name: 'watchAccess', required: false, type: String, pattern: '^(subscription|free|rent|buy)(,(subscription|free|rent|buy)){0,3}$', description: 'Modalidades separadas por vírgula. free inclui anúncios. Quando só há serviços, usa assinatura.' })
+  @ApiQuery({ name: 'franchise', required: false, type: String, minLength: 2, maxLength: 100, description: 'Nome da franquia. Usa coleções do TMDB, franquias da IGDB ou etiquetas exatas de séries.' })
+  @ApiQuery({ name: 'universe', required: false, type: String, minLength: 2, maxLength: 100, description: 'Nome da etiqueta do universo no TMDB. Aplicável a filmes e séries.' })
+  @ApiQuery({ name: 'ratingSource', required: false, enum: ['critic', 'community'] })
+  @ApiOkResponse({ description: 'Objeto com titles ({ catalogId, companies?, rating?, originalLanguage?, originCountries?, streamingMatch?, ageRating?, groupsMatch? }[]) e incomplete (booleano). groupsMatch exige correspondência a todos os grupos solicitados.' })
+  @ApiResponse({ status: 400, description: 'Referências ou filtros inválidos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas excedido.' })
+  async savedFilters(@Req() request: Request, @Query('ids') ids: unknown, @Query('companies') companies?: string, @Query('ratingSource') source?: string, @Query('origin') origin?: string, @Query('streamingProviders') providers?: string, @Query('watchRegion') region?: string, @Query('watchAccess') access?: string, @Query('ageRating') ageRating?: string, @Query('franchise') franchise?: string, @Query('universe') universe?: string) {
+    const user = await this.authorize(request);
+    const streaming = parseStreamingFilter('movie', providers, region, access);
+    const groups = parseGroupFilters(franchise, universe);
+    if (typeof ids !== 'string' || ids.length > 750 || (companies !== undefined && companies !== '1') ||
+        (origin !== undefined && origin !== '1') || (ageRating !== undefined && ageRating !== '1') ||
+        (source !== undefined && source !== 'critic' && source !== 'community') || (!companies && !source && !origin && !streaming && !ageRating && !groups.franchise && !groups.universe))
+      throw new BadRequestException('Filtros de títulos inválidos.');
+    const keys = ids.split(',');
+    if (keys.length > 25 || keys.some(key => !/^(tmdb:(movie|series)|igdb:game):[1-9]\d{0,14}$/.test(key)))
+      throw new BadRequestException('Informe até 25 referências de catálogo válidas.');
+    this.service.limit(user.id);
+    return this.service.collectionFilters([...new Set(keys)], Boolean(companies), source, origin === '1', streaming, ageRating === '1', groups, user.language);
+  }
   private async authorize(request: Request) { const raw: unknown = request.cookies?.[getConfig().cookieName]; return this.auth.me(typeof raw === 'string' ? raw : undefined); }
   @Get('availability') @ApiOperation({summary:'Onde assistir ou jogar',description:'Exige sessão. TMDB/JustWatch: assinatura, gratuito, anúncios, aluguel e compra no país escolhido (BR padrão), com link TMDB, atribuição e checkedAt. IGDB: plataformas e links de lojas validados; não confirma estoque regional, preço ou inclusão em Game Pass/PS Plus. Cache público por título/país: seis horas com dados, uma sem dados. Falhas 502/503 não são ausência nem entram no cache; 429 limita consultas. Não cria itens nem usa bibliotecas privadas.'})
   @ApiOkResponse({description:'kind, source (tmdb-justwatch/igdb), country (null para jogo), groups [{type,providers:[{id,name,logo}]}], platforms, stores [{name,url}], link ou null, checkedAt.'})
@@ -626,22 +1087,58 @@ class CatalogController {
     return { genres: await this.service.genres(kind, user.language) };
   }
   @Get('browse')
-  @ApiOperation({ summary: 'Filtrar títulos por gêneros e produtora', description: 'Gêneros são combinados por OU; produtora, plataforma e busca textual são combinadas por E. Na busca textual os resultados da página são conferidos pelos metadados, e uma página vazia pode ter nextPage. Não altera o acompanhamento.' })
+  @ApiOperation({ summary: 'Filtrar títulos por gênero, origem, produtora, plataforma, ano, avaliação e disponibilidade', description: 'Gêneros, serviços e modalidades são combinados por OU dentro de cada filtro. Os filtros são combinados por E. Quando há serviços selecionados, pelo menos uma oferta deve relacionar um serviço e uma modalidade escolhidos. Uma página vazia pode ter nextPage.' })
   @ApiQuery({ name: 'kind', enum: ['movie', 'series', 'game'] })
   @ApiQuery({ name: 'genres', required: false, description: 'Até 8 IDs positivos da lista /genres da categoria, separados por vírgula.' })
   @ApiQuery({ name: 'company', required: false, minLength: 2, maxLength: 100, description: 'Nome de produtora, somente filmes/séries; encontra empresas cujo nome contém o texto.' })
   @ApiQuery({ name: 'q', required: false, minLength: 2, maxLength: 100 })
   @ApiQuery({ name: 'page', required: false, type: Number, minimum: 1, maximum: 500 })
   @ApiQuery({ name: 'platform', required: false, type: Number, minimum: 1, description: 'ID positivo IGDB, somente jogos.' })
-  @ApiOkResponse({ description: 'results e nextPage (número ou null). Produtora inexistente retorna lista vazia.' })
+  @ApiQuery({ name: 'year', required: false, type: String, pattern: '^[1-9][0-9]{3}$', description: 'Ano entre 1000 e 9999. Usa a estreia da série, o lançamento principal do filme ou o primeiro lançamento do jogo, inclusive quando há plataforma selecionada.' })
+  @ApiQuery({ name: 'ratingSource', required: false, enum: ['critic', 'community', 'personal'], description: 'Exige minRating. Crítica usa Tomatometer já vinculado para filmes/séries e média de críticos da IGDB para jogos. Comunidade usa a média anônima do NextPlay. Pessoal usa estrelas da conta autenticada.' })
+  @ApiQuery({ name: 'streamingProviders', required: false, type: String, pattern: '^[1-9][0-9]{0,8}(,[1-9][0-9]{0,8}){0,7}$', description: 'Até oito IDs de /streaming-providers separados por vírgula. Exige watchRegion e é exclusivo de filmes e séries.' })
+  @ApiQuery({ name: 'watchRegion', required: false, type: String, pattern: '^[A-Z]{2}$', description: 'País ISO de duas letras maiúsculas. Exige streamingProviders ou watchAccess.' })
+  @ApiQuery({ name: 'watchAccess', required: false, type: String, pattern: '^(subscription|free|rent|buy)(,(subscription|free|rent|buy)){0,3}$', description: 'Modalidades separadas por vírgula. free inclui ofertas com anúncios. Exige watchRegion, aceita qualquer serviço se streamingProviders for omitido e usa subscription se só houver serviços selecionados.' })
+  @ApiQuery({ name: 'originalLanguage', required: false, type: String, pattern: '^[a-z]{2}$', description: 'Idioma original ISO 639-1. Exclusivo de filmes e séries.' })
+  @ApiQuery({ name: 'originCountry', required: false, type: String, pattern: '^[A-Z]{2}$', description: 'País de origem ISO 3166-1 alfa-2, exclusivo de filmes e séries. Independente de watchRegion. Na busca textual, filmes sem origem explícita usam os países de produção dos detalhes.' })
+  @ApiQuery({ name: 'maxAge', required: false, enum: brazilianAgeBands.map(String), description: 'Classificação indicativa brasileira máxima, inclusiva, para filmes e séries. 0 representa Livre. Títulos sem classificação brasileira reconhecida são excluídos. Para múltiplos registros brasileiros, prevalece a maior faixa reconhecida.' })
+  @ApiQuery({ name: 'franchise', required: false, type: String, minLength: 2, maxLength: 100, description: 'Nome de coleção TMDB (filmes), etiqueta exata TMDB (séries) ou trecho do nome de franquia IGDB (jogos). Entre franquia e universo aplica interseção.' })
+  @ApiQuery({ name: 'universe', required: false, type: String, minLength: 2, maxLength: 100, description: 'Etiqueta exata TMDB. Aplicável a filmes e séries. Suporta aliases como MCU e UCM.' })
+  @ApiQuery({ name: 'minRating', required: false, type: String, pattern: '^[0-9]{1,3}(\\.[0-9]{1,2})?$', description: 'Exige ratingSource. Mínimo inclusivo de 0 a 100 para crítica, 1 a 5 para comunidade e inteiro de 1 a 5 para pessoal. Títulos sem nota ficam fora.' })
+  @ApiOkResponse({ description: 'results e nextPage (número ou null). Com filtros ativos, cada título inclui rating na escala escolhida e/ou ageRating na faixa brasileira (0 representa Livre). Produtora inexistente retorna lista vazia.' })
   @ApiResponse({ status: 400, description: 'Parâmetros inválidos, gênero fora da categoria ou produtora para jogos.' })
   @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
   @ApiResponse({ status: 429, description: 'Limite de consultas excedido.' })
   @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do provedor.' })
   @ApiResponse({ status: 503, description: 'Provedor não configurado.' })
-  async browse(@Req() request: Request, @Query('kind') kind: string, @Query('page') page?: string, @Query('genres') genres?: string, @Query('company') company?: string, @Query('q') query?: string, @Query('platform') platform?: string) {
+  async browse(@Req() request: Request, @Query('kind') kind: string, @Query('page') page?: string, @Query('genres') genres?: string, @Query('company') company?: string, @Query('q') query?: string, @Query('platform') platform?: string, @Query('year') year?: string, @Query('ratingSource') ratingSource?: string, @Query('minRating') minRating?: string, @Query('streamingProviders') streamingProviders?: string, @Query('watchRegion') watchRegion?: string, @Query('watchAccess') watchAccess?: string, @Query('originalLanguage') originalLanguage?: string, @Query('originCountry') originCountry?: string, @Query('maxAge') maxAge?: string, @Query('franchise') franchise?: string, @Query('universe') universe?: string) {
     const user = await this.authorize(request); this.service.limit(user.id);
-    return this.service.browse(kind, user.language, page === undefined ? 1 : Number(page), genres, company, query, platform === undefined ? undefined : Number(platform));
+    return this.service.browse(kind, user.language, page === undefined ? 1 : Number(page), genres, company, query, platform === undefined ? undefined : Number(platform), year, parseRatingFilter(ratingSource, minRating, user.id), parseStreamingFilter(kind, streamingProviders, watchRegion, watchAccess), { originalLanguage, originCountry }, maxAge, parseGroupFilters(franchise, universe));
+  }
+  @Get('origin-options')
+  @ApiOperation({ summary: 'Listar idiomas originais e países de origem usados no TMDB' })
+  @ApiOkResponse({ description: 'Objeto com languages (ISO 639-1) e countries (ISO 3166-1 alfa-2), ambos listas de códigos.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas excedido.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do TMDB.' })
+  @ApiResponse({ status: 503, description: 'TMDB indisponível ou não configurado.' })
+  async originOptions(@Req() request: Request) {
+    const user = await this.authorize(request); this.service.limit(user.id);
+    return this.service.originOptions();
+  }
+  @Get('streaming-providers')
+  @ApiOperation({ summary: 'Listar serviços de streaming para filmes ou séries por país' })
+  @ApiQuery({ name: 'kind', enum: ['movie', 'series'] })
+  @ApiQuery({ name: 'watchRegion', type: String, pattern: '^[A-Z]{2}$' })
+  @ApiOkResponse({ description: 'Objeto providers com IDs e nomes do TMDB/JustWatch.' })
+  @ApiResponse({ status: 400, description: 'Categoria ou país inválido.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 429, description: 'Limite de consultas excedido.' })
+  @ApiResponse({ status: 502, description: 'Falha ou resposta inválida do provedor.' })
+  @ApiResponse({ status: 503, description: 'Provedor não configurado ou temporariamente indisponível.' })
+  async streamingProviders(@Req() request: Request, @Query('kind') kind: string, @Query('watchRegion') region: string) {
+    const user = await this.authorize(request); this.service.limit(user.id);
+    return { providers: await this.service.streamingProviders(kind, region, user.language) };
   }
   @Get('providers') async providers(@Req() request: Request) { await this.authorize(request); return this.service.available(); }
   @Get('suggestions')

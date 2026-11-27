@@ -1,0 +1,501 @@
+title	platform	edition
+Astro Bot	PS5	standard
+Returnal	PS5	standard
+Demon's Souls	PS5	standard
+Ratchet & Clank Rift Apart	PS5	standard
+Spider-Man 2	PS5	standard
+Rise of the Ronin	PS5	standard
+Stellar Blade	PS5	standard
+Final Fantasy VII Rebirth	PS5	standard
+Final Fantasy XVI	PS5	standard
+God of War Ragnarök	PS5	standard
+Gran Turismo 7	PS5	standard
+Horizon Forbidden West	PS5	standard
+The Last of Us Part I	PS5	standard
+Silent Hill 2	PS5	standard
+A Plague Tale Requiem	PS5	standard
+Death Stranding 2 On the Beach	PS5	standard
+Sackboy A Big Adventure	PS5	standard
+Destruction AllStars	PS5	standard
+Ghostwire Tokyo	PS5	standard
+Deathloop	PS5	standard
+Forspoken	PS5	standard
+Kena Bridge of Spirits	PS5	standard
+Stray	PS5	standard
+The Callisto Protocol	PS5	standard
+Dead Space	PS5	standard
+Sonic Frontiers	PS5	standard
+Sonic Superstars	PS5	standard
+Prince of Persia The Lost Crown	PS5	standard
+Avatar Frontiers of Pandora	PS5	standard
+Star Wars Outlaws	PS5	standard
+Star Wars Jedi Survivor	PS5	standard
+Hogwarts Legacy	PS5	standard
+Lies of P	PS5	standard
+Armored Core VI Fires of Rubicon	PS5	standard
+Lords of the Fallen	PS5	standard
+Dragon's Dogma 2	PS5	standard
+Dragon Age The Veilguard	PS5	standard
+Tekken 8	PS5	standard
+Street Fighter 6	PS5	standard
+Mortal Kombat 1	PS5	standard
+WWE 2K24	PS5	standard
+NBA 2K24	PS5	standard
+EA Sports FC 24	PS5	standard
+F1 24	PS5	standard
+Alan Wake 2	PS5	standard
+Black Myth Wukong	PS5	standard
+Clair Obscur Expedition 33	PS5	standard
+Kingdom Come Deliverance II	PS5	standard
+Assassin's Creed Shadows	PS5	standard
+Split Fiction	PS5	standard
+Bloodborne	PS4	standard
+Ghost of Tsushima	PS4	standard
+Red Dead Redemption 2	PS4	standard
+Uncharted 4 A Thief's End	PS4	standard
+The Last of Us Part II	PS4	standard
+Detroit Become Human	PS4	standard
+Days Gone	PS4	standard
+Sekiro Shadows Die Twice	PS4	standard
+Persona 5 Royal	PS4	standard
+Gravity Rush Remastered	PS4	standard
+Gravity Rush 2	PS4	standard
+Infamous Second Son	PS4	standard
+Infamous First Light	PS4	standard
+Killzone Shadow Fall	PS4	standard
+The Order 1886	PS4	standard
+Driveclub	PS4	standard
+Until Dawn	PS4	standard
+Knack	PS4	standard
+Knack II	PS4	standard
+Concrete Genie	PS4	standard
+Tearaway Unfolded	PS4	standard
+LittleBigPlanet 3	PS4	standard
+Shadow of the Colossus	PS4	standard
+The Last Guardian	PS4	standard
+Horizon Zero Dawn	PS4	standard
+Dreams	PS4	standard
+Nioh	PS4	standard
+Nioh 2	PS4	standard
+Judgment	PS4	standard
+Lost Judgment	PS4	standard
+Yakuza 0	PS4	standard
+Yakuza Kiwami	PS4	standard
+Yakuza Kiwami 2	PS4	standard
+Yakuza 6 The Song of Life	PS4	standard
+Yakuza Like a Dragon	PS4	standard
+13 Sentinels Aegis Rim	PS4	standard
+Odin Sphere Leifthrasir	PS4	standard
+Dragon's Crown Pro	PS4	standard
+NieR Automata	PS4	standard
+NieR Replicant	PS4	standard
+Monster Hunter World	PS4	standard
+Ace Combat 7 Skies Unknown	PS4	standard
+Project CARS 2	PS4	standard
+DiRT Rally 2.0	PS4	standard
+Battlefield 1	PS4	standard
+Battlefield V	PS4	standard
+Titanfall 2	PS4	standard
+Call of Duty Modern Warfare	PS4	standard
+Call of Duty WWII	PS4	standard
+Far Cry 5	PS4	standard
+Uncharted 2 Among Thieves	PS3	standard
+God of War III	PS3	standard
+Gran Turismo 5	PS3	standard
+Metal Gear Solid 4 Guns of the Patriots	PS3	standard
+Killzone 2	PS3	standard
+LittleBigPlanet 2	PS3	standard
+Infamous 2	PS3	standard
+Puppeteer	PS3	standard
+Folklore	PS3	standard
+God of War Ascension	PS3	standard
+Resistance Fall of Man	PS3	standard
+Resistance 2	PS3	standard
+Resistance 3	PS3	standard
+MotorStorm	PS3	standard
+MotorStorm Pacific Rift	PS3	standard
+MotorStorm Apocalypse	PS3	standard
+Ratchet & Clank Tools of Destruction	PS3	standard
+Ratchet & Clank A Crack in Time	PS3	standard
+Ratchet & Clank Into the Nexus	PS3	standard
+Ratchet & Clank All 4 One	PS3	standard
+Heavenly Sword	PS3	standard
+Lair	PS3	standard
+Afrika	PS3	standard
+White Knight Chronicles	PS3	standard
+White Knight Chronicles II	PS3	standard
+Heavy Rain	PS3	standard
+Beyond Two Souls	PS3	standard
+Uncharted Drake's Fortune	PS3	standard
+Uncharted 3 Drake's Deception	PS3	standard
+Infamous	PS3	standard
+Killzone 3	PS3	standard
+LittleBigPlanet	PS3	standard
+Gran Turismo 6	PS3	standard
+Mirror's Edge	PS3	standard
+Journey Collector's Edition	PS3	named
+3D Dot Game Heroes	PS3	standard
+Eternal Sonata	PS3	standard
+Tales of Graces f	PS3	standard
+Tales of Xillia	PS3	standard
+Tales of Xillia 2	PS3	standard
+Tales of Zestiria	PS3	standard
+Ni no Kuni Wrath of the White Witch	PS3	standard
+Valkyria Chronicles	PS3	standard
+Catherine	PS3	standard
+Asura's Wrath	PS3	standard
+El Shaddai Ascension of the Metatron	PS3	standard
+Majin and the Forsaken Kingdom	PS3	standard
+Spec Ops The Line	PS3	standard
+Binary Domain	PS3	standard
+Vanquish	PS3	standard
+God of War	PS2	standard
+God of War II	PS2	standard
+Gran Turismo 3 A-Spec	PS2	standard
+Gran Turismo 4	PS2	standard
+Metal Gear Solid 2 Sons of Liberty	PS2	standard
+Metal Gear Solid 3 Snake Eater	PS2	standard
+Silent Hill 3	PS2	standard
+Silent Hill 4 The Room	PS2	standard
+Resident Evil Outbreak	PS2	standard
+Resident Evil Outbreak File 2	PS2	standard
+Resident Evil Code Veronica X	PS2	standard
+Final Fantasy X	PS2	standard
+Final Fantasy X-2	PS2	standard
+Final Fantasy XII	PS2	standard
+Dragon Quest VIII	PS2	standard
+Kingdom Hearts	PS2	standard
+Kingdom Hearts II	PS2	standard
+Jak and Daxter The Precursor Legacy	PS2	standard
+Jak II	PS2	standard
+Jak 3	PS2	standard
+Jak X Combat Racing	PS2	standard
+Ratchet & Clank	PS2	standard
+Ratchet & Clank Going Commando	PS2	standard
+Ratchet & Clank Up Your Arsenal	PS2	standard
+Ratchet Deadlocked	PS2	standard
+Sly Cooper and the Thievius Raccoonus	PS2	standard
+Sly 2 Band of Thieves	PS2	standard
+Sly 3 Honor Among Thieves	PS2	standard
+ICO	PS2	standard
+Okami	PS2	standard
+Viewtiful Joe	PS2	standard
+Viewtiful Joe 2	PS2	standard
+Devil May Cry	PS2	standard
+Devil May Cry 2	PS2	standard
+Devil May Cry 3 Dante's Awakening	PS2	standard
+Onimusha Warlords	PS2	standard
+Onimusha 2 Samurai's Destiny	PS2	standard
+Onimusha 3 Demon Siege	PS2	standard
+Onimusha Dawn of Dreams	PS2	standard
+Tekken 4	PS2	standard
+Tekken 5	PS2	standard
+Soulcalibur II	PS2	standard
+Soulcalibur III	PS2	standard
+Virtua Fighter 4	PS2	standard
+Guitar Hero II	PS2	standard
+Guitar Hero III Legends of Rock	PS2	standard
+Burnout 3 Takedown	PS2	standard
+Burnout Revenge	PS2	standard
+Black	PS2	standard
+Bully	PS2	standard
+Crash Bandicoot	PS1	standard
+Crash Bandicoot 2 Cortex Strikes Back	PS1	standard
+Crash Bandicoot Warped	PS1	standard
+Crash Team Racing	PS1	standard
+Crash Bash	PS1	standard
+Spyro the Dragon	PS1	standard
+Spyro 2 Ripto's Rage	PS1	standard
+Spyro Year of the Dragon	PS1	standard
+Gran Turismo	PS1	standard
+Gran Turismo 2	PS1	standard
+Metal Gear Solid	PS1	standard
+Resident Evil	PS1	standard
+Resident Evil 2	PS1	standard
+Resident Evil 3 Nemesis	PS1	standard
+Silent Hill	PS1	standard
+Final Fantasy VII	PS1	standard
+Final Fantasy VIII	PS1	standard
+Final Fantasy IX	PS1	standard
+Final Fantasy Tactics	PS1	standard
+Vagrant Story	PS1	standard
+Chrono Cross	PS1	standard
+Xenogears	PS1	standard
+Legend of Mana	PS1	standard
+The Legend of Dragoon	PS1	standard
+Suikoden	PS1	standard
+Suikoden II	PS1	standard
+Breath of Fire III	PS1	standard
+Breath of Fire IV	PS1	standard
+Wild Arms	PS1	standard
+Wild Arms 2	PS1	standard
+Parasite Eve	PS1	standard
+Parasite Eve II	PS1	standard
+Dino Crisis	PS1	standard
+Dino Crisis 2	PS1	standard
+Castlevania Symphony of the Night	PS1	standard
+Mega Man X4	PS1	standard
+Mega Man X5	PS1	standard
+Mega Man X6	PS1	standard
+Mega Man Legends	PS1	standard
+Mega Man Legends 2	PS1	standard
+The Misadventures of Tron Bonne	PS1	standard
+Tekken	PS1	standard
+Tekken 2	PS1	standard
+Tekken 3	PS1	standard
+Soul Blade	PS1	standard
+Ridge Racer Type 4	PS1	standard
+Ape Escape	PS1	standard
+Tomba	PS1	standard
+Klonoa Door to Phantomile	PS1	standard
+PaRappa the Rapper	PS1	standard
+Halo 3	Xbox 360	standard
+Halo 3 ODST	Xbox 360	standard
+Halo Reach	Xbox 360	standard
+Halo 4	Xbox 360	standard
+Halo Wars	Xbox 360	standard
+Gears of War	Xbox 360	standard
+Gears of War 2	Xbox 360	standard
+Gears of War 3	Xbox 360	standard
+Gears of War Judgment	Xbox 360	standard
+Forza Motorsport 2	Xbox 360	standard
+Forza Motorsport 3	Xbox 360	standard
+Forza Motorsport 4	Xbox 360	standard
+Forza Horizon	Xbox 360	standard
+Forza Horizon 2	Xbox 360	standard
+Fable II	Xbox 360	standard
+Fable III	Xbox 360	standard
+Fable Anniversary	Xbox 360	standard
+Lost Odyssey	Xbox 360	standard
+Blue Dragon	Xbox 360	standard
+Infinite Undiscovery	Xbox 360	standard
+Tales of Vesperia	Xbox 360	standard
+The Last Remnant	Xbox 360	standard
+MagnaCarta 2	Xbox 360	standard
+Enchanted Arms	Xbox 360	standard
+Kameo Elements of Power	Xbox 360	standard
+Perfect Dark Zero	Xbox 360	standard
+Viva Piñata	Xbox 360	standard
+Viva Piñata Trouble in Paradise	Xbox 360	standard
+Banjo-Kazooie Nuts & Bolts	Xbox 360	standard
+Crackdown	Xbox 360	standard
+Crackdown 2	Xbox 360	standard
+Project Gotham Racing 3	Xbox 360	standard
+Project Gotham Racing 4	Xbox 360	standard
+Too Human	Xbox 360	standard
+Ninja Gaiden II	Xbox 360	standard
+Dead or Alive 4	Xbox 360	standard
+Dead or Alive Xtreme 2	Xbox 360	standard
+Alan Wake	Xbox 360	standard
+Dead Rising	Xbox 360	standard
+Dead Rising 2	Xbox 360	standard
+Left 4 Dead	Xbox 360	standard
+Left 4 Dead 2	Xbox 360	standard
+The Orange Box	Xbox 360	standard
+Portal 2	Xbox 360	standard
+Mass Effect	Xbox 360	standard
+Mass Effect 2	Xbox 360	standard
+Mass Effect 3	Xbox 360	standard
+Saints Row	Xbox 360	standard
+Saints Row 2	Xbox 360	standard
+Saints Row The Third	Xbox 360	standard
+Forza Horizon 4	Xbox One	standard
+Gears 5	Xbox One	standard
+Halo 5 Guardians	Xbox One	standard
+Quantum Break	Xbox One	standard
+Sunset Overdrive	Xbox One	standard
+Rare Replay	Xbox One	standard
+Ryse Son of Rome	Xbox One	standard
+ReCore	Xbox One	standard
+Killer Instinct Definitive Edition	Xbox One	named
+Forza Motorsport 7	Xbox One	standard
+Forza Motorsport 5	Xbox One	standard
+Forza Motorsport 6	Xbox One	standard
+Forza Horizon 3	Xbox One	standard
+Gears of War Ultimate Edition	Xbox One	standard
+Gears of War 4	Xbox One	standard
+Halo The Master Chief Collection	Xbox One	standard
+Halo Wars 2	Xbox One	standard
+Dead Rising 3	Xbox One	standard
+Dead Rising 4	Xbox One	standard
+Sea of Thieves	Xbox One	standard
+State of Decay 2	Xbox One	standard
+Crackdown 3	Xbox One	standard
+Ori and the Blind Forest Definitive Edition	Xbox One	named
+Ori and the Will of the Wisps	Xbox One	standard
+Minecraft Dungeons	Xbox One	standard
+The Outer Worlds	Xbox One	standard
+Control	Xbox One	standard
+Prey	Xbox One	standard
+Dishonored 2	Xbox One	standard
+Dishonored Death of the Outsider	Xbox One	standard
+Wolfenstein The New Order	Xbox One	standard
+Wolfenstein The Old Blood	Xbox One	standard
+Wolfenstein II The New Colossus	Xbox One	standard
+DOOM	Xbox One	standard
+DOOM Eternal	Xbox One	standard
+Rage 2	Xbox One	standard
+Metro Exodus	Xbox One	standard
+Metro Redux	Xbox One	standard
+Mad Max	Xbox One	standard
+Middle-earth Shadow of Mordor	Xbox One	standard
+Middle-earth Shadow of War	Xbox One	standard
+Assassin's Creed Unity	Xbox One	standard
+Assassin's Creed Syndicate	Xbox One	standard
+Assassin's Creed Origins	Xbox One	standard
+Assassin's Creed Odyssey	Xbox One	standard
+Watch Dogs	Xbox One	standard
+Watch Dogs 2	Xbox One	standard
+Tom Clancy's The Division	Xbox One	standard
+Tom Clancy's The Division 2	Xbox One	standard
+Tom Clancy's Ghost Recon Wildlands	Xbox One	standard
+Mario Kart 8 Deluxe	Switch	standard
+Super Mario Odyssey	Switch	standard
+The Legend of Zelda Breath of the Wild	Switch	standard
+The Legend of Zelda Tears of the Kingdom	Switch	standard
+Animal Crossing New Horizons	Switch	standard
+Super Smash Bros Ultimate	Switch	standard
+Metroid Dread	Switch	standard
+Luigi's Mansion 3	Switch	standard
+Bayonetta 2	Switch	standard
+Xenoblade Chronicles 2	Switch	standard
+Xenoblade Chronicles Definitive Edition	Switch	named
+Xenoblade Chronicles 3	Switch	standard
+Bayonetta 3	Switch	standard
+Bayonetta Origins Cereza and the Lost Demon	Switch	standard
+Metroid Prime Remastered	Switch	standard
+Super Mario Bros Wonder	Switch	standard
+Super Mario 3D World + Bowser's Fury	Switch	standard
+Super Mario 3D All-Stars	Switch	standard
+New Super Mario Bros U Deluxe	Switch	standard
+Super Mario Maker 2	Switch	standard
+Super Mario RPG	Switch	standard
+Paper Mario The Origami King	Switch	standard
+Paper Mario The Thousand-Year Door	Switch	standard
+Princess Peach Showtime	Switch	standard
+Yoshi's Crafted World	Switch	standard
+Kirby and the Forgotten Land	Switch	standard
+Kirby Star Allies	Switch	standard
+Kirby's Return to Dream Land Deluxe	Switch	standard
+Donkey Kong Country Tropical Freeze	Switch	standard
+Donkey Kong Country Returns HD	Switch	standard
+Splatoon 2	Switch	standard
+Splatoon 3	Switch	standard
+ARMS	Switch	standard
+Pikmin 3 Deluxe	Switch	standard
+Pikmin 4	Switch	standard
+Fire Emblem Three Houses	Switch	standard
+Fire Emblem Engage	Switch	standard
+Fire Emblem Warriors Three Hopes	Switch	standard
+Pokémon Sword	Switch	standard
+Pokémon Shield	Switch	standard
+Pokémon Brilliant Diamond	Switch	standard
+Pokémon Shining Pearl	Switch	standard
+Pokémon Legends Arceus	Switch	standard
+Pokémon Scarlet	Switch	standard
+Pokémon Violet	Switch	standard
+Pokémon Let's Go Pikachu	Switch	standard
+Pokémon Let's Go Eevee	Switch	standard
+Octopath Traveler	Switch	standard
+Triangle Strategy	Switch	standard
+Astral Chain	Switch	standard
+Wii Sports	Wii	standard
+Wii Sports Resort	Wii	standard
+Wii Play	Wii	standard
+Wii Play Motion	Wii	standard
+Wii Fit	Wii	standard
+Wii Fit Plus	Wii	standard
+Wii Party	Wii	standard
+Wii Music	Wii	standard
+Super Mario Galaxy	Wii	standard
+Super Mario Galaxy 2	Wii	standard
+New Super Mario Bros Wii	Wii	standard
+Mario Kart Wii	Wii	standard
+Super Smash Bros Brawl	Wii	standard
+Super Paper Mario	Wii	standard
+Mario Party 8	Wii	standard
+Mario Party 9	Wii	standard
+Mario Strikers Charged	Wii	standard
+Mario Super Sluggers	Wii	standard
+Mario Sports Mix	Wii	standard
+Mario Power Tennis	Wii	standard
+Donkey Kong Country Returns	Wii	standard
+A Boy and His Blob	Wii	standard
+Kirby's Epic Yarn	Wii	standard
+Kirby's Dream Collection	Wii	standard
+The Legend of Zelda Twilight Princess	Wii	standard
+The Legend of Zelda Skyward Sword	Wii	standard
+Link's Crossbow Training	Wii	standard
+Metroid Prime 3 Corruption	Wii	standard
+Metroid Prime Trilogy	Wii	standard
+Metroid Other M	Wii	standard
+Xenoblade Chronicles	Wii	standard
+The Last Story	Wii	standard
+Pandora's Tower	Wii	standard
+Sin and Punishment Star Successor	Wii	standard
+Punch-Out	Wii	standard
+Excite Truck	Wii	standard
+Excitebots Trick Racing	Wii	standard
+WarioWare Smooth Moves	Wii	standard
+Wario Land Shake It	Wii	standard
+Trauma Center Second Opinion	Wii	standard
+Trauma Center New Blood	Wii	standard
+Trauma Team	Wii	standard
+MadWorld	Wii	standard
+No More Heroes	Wii	standard
+No More Heroes 2 Desperate Struggle	Wii	standard
+Muramasa The Demon Blade	Wii	standard
+Red Steel	Wii	standard
+Red Steel 2	Wii	standard
+The House of the Dead Overkill	Wii	standard
+Zack & Wiki Quest for Barbaros' Treasure	Wii	standard
+Super Mario 3D Land	3DS	standard
+New Super Mario Bros 2	3DS	standard
+Mario Kart 7	3DS	standard
+Super Smash Bros for Nintendo 3DS	3DS	standard
+Mario Party Island Tour	3DS	standard
+Mario Party Star Rush	3DS	standard
+Mario Party The Top 100	3DS	standard
+Mario Golf World Tour	3DS	standard
+Mario Tennis Open	3DS	standard
+Paper Mario Sticker Star	3DS	standard
+Mario & Luigi Dream Team	3DS	standard
+Mario & Luigi Paper Jam	3DS	standard
+Mario & Luigi Superstar Saga + Bowser's Minions	3DS	standard
+Mario & Luigi Bowser's Inside Story + Bowser Jr's Journey	3DS	standard
+Luigi's Mansion Dark Moon	3DS	standard
+The Legend of Zelda Ocarina of Time 3D	3DS	standard
+The Legend of Zelda Majora's Mask 3D	3DS	standard
+The Legend of Zelda A Link Between Worlds	3DS	standard
+The Legend of Zelda Tri Force Heroes	3DS	standard
+Metroid Samus Returns	3DS	standard
+Metroid Prime Federation Force	3DS	standard
+Kirby Triple Deluxe	3DS	standard
+Kirby Planet Robobot	3DS	standard
+Kirby Battle Royale	3DS	standard
+Yoshi's New Island	3DS	standard
+Poochy & Yoshi's Woolly World	3DS	standard
+Donkey Kong Country Returns 3D	3DS	standard
+Star Fox 64 3D	3DS	standard
+Pilotwings Resort	3DS	standard
+Steel Diver	3DS	standard
+Kid Icarus Uprising	3DS	standard
+Tomodachi Life	3DS	standard
+Animal Crossing New Leaf	3DS	standard
+Animal Crossing Happy Home Designer	3DS	standard
+Fire Emblem Awakening	3DS	standard
+Fire Emblem Fates Birthright	3DS	standard
+Fire Emblem Fates Conquest	3DS	standard
+Fire Emblem Echoes Shadows of Valentia	3DS	standard
+Pokémon X	3DS	standard
+Pokémon Y	3DS	standard
+Pokémon Omega Ruby	3DS	standard
+Pokémon Alpha Sapphire	3DS	standard
+Pokémon Sun	3DS	standard
+Pokémon Moon	3DS	standard
+Pokémon Ultra Sun	3DS	standard
+Pokémon Ultra Moon	3DS	standard
+Shin Megami Tensei IV	3DS	standard
+Shin Megami Tensei IV Apocalypse	3DS	standard
+Bravely Default	3DS	standard
+Bravely Second End Layer	3DS	standard

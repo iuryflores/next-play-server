@@ -166,3 +166,58 @@ Não publique logs brutos do PM2 ou `.env`: podem conter credenciais de outros a
 ### Rotten Tomatoes em produção
 
 As variáveis em `.env.rotten-tomatoes.local` são carregadas apenas no desenvolvimento e não entram no pacote publicado. Configure os secrets dedicados `ROTTEN_TOMATOES_ALGOLIA_APP_ID`, `ROTTEN_TOMATOES_ALGOLIA_API_KEY` e `ROTTEN_TOMATOES_ALGOLIA_INDEX` no environment `production` da API. O runner valida o conjunto, habilita a integração e substitui somente essas variáveis no `.env` remoto. Ausência de todos preserva o APP_ENV_FILE; conjunto parcial/inválido interrompe o deploy sem imprimir valores. A chave deve ser de busca apropriada à integração, nunca administrativa.
+
+## Piloto OAuth do Mercado Livre
+
+No DevCenter, habilite PKCE e configure o aplicativo para leitura e acesso offline.
+Cadastre exatamente `https://nextplay.imjsistemas.com.br/api/integrations/mercado-livre/callback`
+como URI de redirecionamento para o domínio de produção.
+
+Configure no secret dedicado `MELI_ENV_FILE` do environment `production` da API as variáveis `MELI_CLIENT_ID`,
+`MELI_CLIENT_SECRET`, `MELI_PILOT_OWNER_ID`, `MELI_REDIRECT_URI` e
+`MELI_TOKEN_ENCRYPTION_KEY`, uma por linha no formato `.env.example`. O deploy
+mescla somente essas cinco chaves no ambiente da API. O ID do piloto é o ID retornado
+por `GET /api/auth/me` para a conta NextPlay encarregada do teste. Mantenha a chave de
+cifragem entre deploys. Se ela for substituída, autorize novamente para gravar uma
+nova credencial cifrada.
+
+Após publicar, entre no NextPlay com a conta do piloto e abra
+`/api/integrations/mercado-livre/authorize` no mesmo navegador. Conclua o
+consentimento no Mercado Livre. O retorno leva a
+`/api/integrations/mercado-livre/status`, que exibe a presença e a expiração
+da autorização armazenada. A troca de código ocorre no servidor.
+
+### Teste de preços com 500 jogos
+
+A lista em `scripts/mercado-livre-500-games.txt` tem 500 títulos distintos, 50 por
+plataforma. A amostra considera exemplares físicos usados, na edição padrão ou na
+edição nomeada. Use a máquina que tem acesso ao MongoDB e às configurações da API.
+No diretório `server`, execute primeiro o teste curto:
+
+```sh
+node --env-file=.env scripts/mercado-livre-price-pilot.mjs --limit 10
+```
+
+O script lê a autorização cifrada do piloto ou usa `MELI_ACCESS_TOKEN` quando
+fornecido por um ambiente seguro. Depois de conferir os comparáveis do teste
+curto, amplie o mesmo relatório:
+
+```sh
+node --env-file=.env scripts/mercado-livre-price-pilot.mjs --limit 500 --batch-size 25 --interval-ms 1000
+```
+
+Use um processo por relatório. O script consulta até 50 anúncios por jogo, uma
+requisição por vez, e grava o progresso após cada consulta completa. Em caso
+de interrupção, repita o comando com o mesmo caminho de saída. Para uma nova
+medição, use `--output` com outro caminho. Se o token vencer, autorize novamente
+e retome no mesmo arquivo. `--list-only` valida a lista sem conectar à API ou ao
+banco.
+
+O JSON padrão `mercado-livre-price-pilot.local.json` inclui IDs e preços dos
+comparáveis aprovados, data, cobertura e subtotal em centavos. A mediana exige
+três vendedores distintos. Os filtros são conservadores e exigem indicação de
+mídia física, console, edição compatível e condição usada. Títulos traduzidos
+ou com variações de grafia podem exigir revisão manual. O subtotal representa a
+soma das medianas dos jogos avaliados a partir de preços anunciados, sem frete.
+As permissões da busca e a cobertura real serão verificadas no primeiro teste
+autenticado.

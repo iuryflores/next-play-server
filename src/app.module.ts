@@ -20,6 +20,7 @@ import { AchievementsModule } from './achievements/achievements.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ProgressionModule } from './progression/progression.module';
 import { GameSessionsModule } from './game-sessions/game-sessions.module';
+import { MercadoLivreModule } from './mercado-livre/mercado-livre.module';
 
 @ApiTags('health')
 @Controller('health')
@@ -39,7 +40,7 @@ class HealthController {
       connection.on('error', (error: Error & { code?: string | number }) => console.error(`[MongoDB] Erro de conexão: ${error.name}${error.code ? ` (${error.code})` : ''}`));
       return connection;
     },
-  }) }), AuthModule, GameImportsModule, GamePlannerModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule, GameSessionsModule, ChallengesModule, SocialModule, ListsModule, InsightsModule, HubModule],
+  }) }), AuthModule, GameImportsModule, GamePlannerModule, LibraryModule, CatalogModule, EpisodesModule, FriendsModule, RottenTomatoesModule, CollectorModule, AchievementsModule, NotificationsModule, ProgressionModule, GameSessionsModule, ChallengesModule, SocialModule, ListsModule, InsightsModule, HubModule, MercadoLivreModule],
   controllers: [HealthController],
 })
 export class AppModule {}

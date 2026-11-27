@@ -38,11 +38,12 @@ test('séries encerradas e canceladas só concluem com todo o catálogo assistid
     { status: 'ended', total: 3, seen: 2, completed: false },
     { status: 'ended', total: 2, seen: 1, completed: false },
     { status: 'ended', total: 2, seen: 2, completed: false, rewatch: true },
+    { status: 'ended', total: 2, seen: 2, completed: false, abandoned: true },
   ];
   for (const [index, scenario] of scenarios.entries()) {
     scenario.id = new Types.ObjectId(); scenario.catalogId = 'tmdb:series:' + (index + 1);
     const rewatchId = scenario.rewatch ? new Types.ObjectId() : null;
-    await db.collection('library_items').insertOne({ _id: scenario.id, ownerId: owner, kind: 'series', status: 'active', title: 'Série ' + index, catalogId: scenario.catalogId, stars: 4, notes: '', ...(rewatchId ? { rewatchActiveId: rewatchId } : {}) });
+    await db.collection('library_items').insertOne({ _id: scenario.id, ownerId: owner, kind: 'series', status: 'active', title: 'Série ' + index, catalogId: scenario.catalogId, stars: 4, notes: '', abandoned: Boolean(scenario.abandoned), ...(rewatchId ? { rewatchActiveId: rewatchId } : {}) });
     await db.collection('series_seasons').insertMany([
       { catalogId: scenario.catalogId, number: 1, loaded: true, total: 2, episodes: [{ number: 1, airDate: '2020-01-01' }, { number: 2, airDate: '2020-01-02' }] },
       { catalogId: scenario.catalogId, number: 0, loaded: false, total: 10, episodes: [] },
@@ -56,6 +57,8 @@ test('séries encerradas e canceladas só concluem com todo o catálogo assistid
     const row = result.find(row => row.id === String(scenario.id));
     assert.equal(row.status, scenario.completed ? 'completed' : 'active');
     assert.equal(row.stars, 4);
+    assert.equal(row.abandoned, Boolean(scenario.abandoned));
+    if (scenario.abandoned) assert.equal(row.episodeProgress.watched, 2);
     const stored = await db.collection('library_items').findOne({ _id: scenario.id });
     assert.equal(stored.status, scenario.completed ? 'completed' : 'active');
     if (scenario.completed) { assert.equal(stored.watchedDateUnknown, true); assert.equal(stored.completedOn, null); assert.ok(stored.episodesCompletedAt); }

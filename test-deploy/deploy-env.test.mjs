@@ -2,6 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deploymentEnv } from '../scripts/prepare-deploy-env.mjs';
 
+test('mescla somente as credenciais dedicadas do Mercado Livre e valida o callback', () => {
+  const input = 'CLIENT_ORIGIN=https://nextplay.example.test\nSMTP_PASS="valor preservado"\nMELI_CLIENT_ID=1\n';
+  const meli = [
+    'MELI_CLIENT_ID=123456',
+    'MELI_CLIENT_SECRET=segredo-ficticio-de-teste',
+    'MELI_PILOT_OWNER_ID=' + 'a'.repeat(24),
+    'MELI_REDIRECT_URI=https://nextplay.example.test/api/integrations/mercado-livre/callback',
+    'MELI_TOKEN_ENCRYPTION_KEY=' + 'b'.repeat(64),
+  ].join('\n');
+  const output = deploymentEnv(input, '', {}, meli);
+  assert.match(output, /SMTP_PASS="valor preservado"/);
+  assert.match(output, /^MELI_CLIENT_ID=123456$/m);
+  assert.equal(output.match(/^MELI_CLIENT_ID=/gm).length, 1);
+  assert.throws(() => deploymentEnv(input, '', {}, meli + '\nSMTP_PASS=invalido'), /MELI_ENV_FILE/);
+  assert.throws(() => deploymentEnv(input, '', {}, meli.replace('test/api', 'test/outro/api')), /MELI_ENV_FILE/);
+});
+
 test('chave dedicada de livros substitui somente a configuração de Books e preserva os demais segredos', () => {
   const result = deploymentEnv('PORT=3111\r\nSMTP_PASS="ficticio # teste"\r\nGOOGLE_BOOKS_API_KEY=old\r\nexport GOOGLE_BOOKS_API_KEY=duplicate\r\n', 'test-books-key-123');
   assert.equal(result, 'PORT=3111\nSMTP_PASS="ficticio # teste"\nGOOGLE_BOOKS_API_KEY=test-books-key-123\n');

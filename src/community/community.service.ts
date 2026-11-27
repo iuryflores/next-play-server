@@ -4,6 +4,7 @@ import { Connection, Types } from 'mongoose';
 import { commentAuthor } from './comment-author';
 import { saveNotification } from '../notifications/notification-store';
 import { protectSpoilers } from './spoilers';
+import { communityRatings } from './title-ratings';
 
 type Comment = { _id: Types.ObjectId; catalogKey: string; ownerId: Types.ObjectId; text: string; createdAt: Date; parentId?: Types.ObjectId | null; replyToOwnerId?: Types.ObjectId; clientRequestId?: string; deleted?: boolean; spoiler?:boolean };
 @Injectable()
@@ -38,17 +39,7 @@ export class CommunityService implements OnModuleInit {
     return rows.map(row => ({ id: row._id.toString(), parentId: row.parentId?.toString() || null, spoiler: row.spoiler !== false, text: row.deleted ? '' : row.text, deleted: Boolean(row.deleted), createdAt: row.createdAt, mine: row.ownerId.toString() === owner, author: commentAuthor(row.catalogKey, row.ownerId.toString()), likeCount: row.deleted ? 0 : (likes.find(like => like._id.equals(row._id))?.count || 0), liked: !row.deleted && Boolean(likes.find(like => like._id.equals(row._id))?.liked), replyCount: replies.find(reply => reply._id.equals(row._id))?.count || 0 }));
   }
   private async ratings(catalogKey: string) {
-    // Contas com registros legados duplicados contribuem somente com a avaliação
-    // mais recente do título; nenhuma nota individual ou identidade é devolvida.
-    const rows = await this.connection.collection('library_items').aggregate<{ _id: number; count: number }>([
-      { $match: { catalogKey } },
-      { $sort: { updatedAt: -1, _id: -1 } },
-      { $group: { _id: '$ownerId', stars: { $first: '$stars' }, status: { $first: '$status' } } },
-      { $match: { status: 'completed', stars: { $in: [1, 2, 3, 4, 5] } } },
-      { $group: { _id: '$stars', count: { $sum: 1 } } },
-    ]).toArray();
-    const count = rows.reduce((total, row) => total + row.count, 0);
-    return { count, average: count ? Math.round(rows.reduce((total, row) => total + row._id * row.count, 0) / count * 100) / 100 : null, distribution: [5, 4, 3, 2, 1].map(stars => ({ stars, count: rows.find(row => row._id === stars)?.count || 0 })) };
+    return (await communityRatings(this.connection, [catalogKey])).get(catalogKey)!;
   }
   async list(owner: string, id: string, before?: string) {
     const item = await this.owned(owner, id);

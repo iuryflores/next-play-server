@@ -29,6 +29,7 @@ export class GamePlannerService {
       kind: "game",
       status: { $in: ["planned", "active"] },
       archived: { $ne: true },
+      abandoned: { $ne: true },
     };
     const rows = await this.db
       .collection("library_items")
@@ -100,7 +101,7 @@ class GamePlannerController {
   @ApiOperation({
     summary: "Estimar backlog privado de jogos",
     description:
-      "Até vinte jogos planejados/em andamento não arquivados por página, inclusive DLCs como partes separadas sem somar horas do principal. Retorna items com id, metadados, horas da parte, estimate IGDB ou null e estimateFailed, total e nextAfter. Consulta não altera status, horas, posse ou XP. Ausências e falhas são distintas; o cliente agrega páginas e aplica objetivo/filtros.",
+      "Até vinte jogos planejados/em andamento que não estejam arquivados ou abandonados por página, inclusive DLCs como partes separadas sem somar horas do principal. Retorna items com id, metadados, horas da parte, estimate IGDB ou null e estimateFailed, total e nextAfter. Consulta não altera status, horas, posse ou XP. Ausências e falhas são distintas; o cliente agrega páginas e aplica objetivo/filtros.",
   })
   async page(@Req() request: Request, @Query() query: PlannerQuery) {
     return this.service.page((await this.auth.forRequest(request)).id, query.after);

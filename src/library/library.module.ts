@@ -39,6 +39,7 @@ class LibraryItem {
   @Prop({ required: true, enum: statuses }) status!: string;
   @Prop({ enum: ['none', 'high', 'medium', 'low'], default: 'none' }) priority!: string;
   @Prop({ default: false }) archived!: boolean;
+  @Prop({ default: false }) abandoned!: boolean;
   @Prop({ default: false }) rewatchWanted!: boolean;
   @Prop({ type: String, default: null }) rewatchActiveId?: string | null;
   @Prop({ type: [Object], default: undefined }) rewatches?: Viewing[];
@@ -82,6 +83,8 @@ class LibraryItem {
 const ItemSchema = SchemaFactory.createForClass(LibraryItem);
 ItemSchema.index({ ownerId: 1, updatedAt: -1 });
 ItemSchema.index({ ownerId: 1, catalogKey: 1 });
+// A média da comunidade consulta títulos de vários usuários em uma única página.
+ItemSchema.index({ catalogKey: 1 });
 // A leitura de votos de episódios localiza primeiro os acompanhamentos da mesma série.
 ItemSchema.index({ catalogId: 1, kind: 1 });
 ItemSchema.index({ ownerId: 1, catalogId: 1 }, { unique: true, partialFilterExpression: { catalogId: { $type: 'string' } } });
@@ -134,6 +137,10 @@ class CommentLikeDto {
 }
 class ArchiveDto { @ApiProperty({ type: Boolean, required: true })
   @IsBoolean() archived!: boolean; }
+class AbandonDto {
+  @ApiProperty({ type: Boolean, description: 'true marca como abandonado. false retoma o acompanhamento com o progresso registrado.' })
+  @IsBoolean() abandoned!: boolean;
+}
 class PriorityDto {
   @ApiProperty({ enum: ['none', 'high', 'medium', 'low'], description: 'Prioridade privada do backlog; none remove a prioridade. Não altera status ou progresso.' })
   @IsIn(['none', 'high', 'medium', 'low']) priority!: string;
@@ -332,7 +339,7 @@ export class LibraryService implements OnModuleInit {
     }));
     return { sections };
   }
-  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { steamImportAppId: item.kind === 'game' ? item.steamImportAppId : undefined, lastWatchedAt: !item.watchedDateUnknown && ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), rewatchWanted: Boolean(item.rewatchWanted), rewatching: Boolean(item.rewatchActiveId), rewatchActiveId: item.rewatchActiveId || null, rewatchCount: item.rewatches?.length || 0, watchedBefore: Boolean(item.rewatches?.length), priority: item.priority || 'none', parentGameCatalogId: item.kind === 'game' ? item.parentGameCatalogId : undefined, platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, lastPlayedOn: item.kind === 'game' ? item.lastPlayedOn || null : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.rewatchActiveId ? 'active' : item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), watchedDateUnknown: Boolean(item.watchedDateUnknown), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
+  private publicItem(item: HydratedDocument<LibraryItem> & { updatedAt?: Date }) { return { steamImportAppId: item.kind === 'game' ? item.steamImportAppId : undefined, lastWatchedAt: !item.watchedDateUnknown && ['movie', 'series'].includes(item.kind) && item.status === 'completed' ? (item.completedOn && item.completedOn !== item.completedAt?.toISOString().slice(0, 10) ? new Date(item.completedOn + 'T00:00:00Z') : item.completedAt) : undefined, id: item._id.toString(), rewatchWanted: Boolean(item.rewatchWanted), rewatching: Boolean(item.rewatchActiveId), rewatchActiveId: item.rewatchActiveId || null, rewatchCount: item.rewatches?.length || 0, watchedBefore: Boolean(item.rewatches?.length), priority: item.priority || 'none', parentGameCatalogId: item.kind === 'game' ? item.parentGameCatalogId : undefined, platform: item.kind === 'game' ? item.platform || '' : undefined, playtimeMinutes: item.kind === 'game' ? item.playtimeMinutes || 0 : undefined, lastPlayedOn: item.kind === 'game' ? item.lastPlayedOn || null : undefined, title: item.title, originalTitle: item.originalTitle, kind: item.kind, status: item.rewatchActiveId ? 'active' : item.kind === 'movie' && item.status === 'active' ? 'planned' : item.status, archived: Boolean(item.archived), abandoned: Boolean(item.abandoned), watchedDateUnknown: Boolean(item.watchedDateUnknown), completedOn: item.completedOn, completedAt: item.completedAt, episodesCompletedAt: item.episodesCompletedAt, stars: item.stars || 0, feeling: item.feeling || '', favoriteCharacter: item.favoriteCharacter || '', favoriteCastId: item.favoriteCastId || '', notes: item.notes, updatedAt: item.updatedAt, genres: item.genres || [], catalogId: item.catalogId, coverUrl: item.coverUrl, year: item.year, runtime: item.runtime, productionCompanies: item.productionCompanies, releaseDate: item.releaseDate, unreleased: item.unreleased, overview: item.overview, sourceUrl: item.sourceUrl, ...(item.kind === 'book' ? { authors: item.authors || [], publisher: item.publisher || '', isbn: item.isbn || '', language: item.language || '' } : {}) }; }
   private id(value: string) { if (!/^[a-f0-9]{24}$/i.test(value)) throw new BadRequestException('Item inválido.'); return value; }
   async list(ownerId: string) {
     const items = await this.items.find({ ownerId }, { gameSessions: 0, gameStatusHistory: 0 }).sort({ updatedAt: -1, _id: -1 }).exec();
@@ -418,12 +425,12 @@ export class LibraryService implements OnModuleInit {
       const latest = itemProgress.filter(row => row.watchedAt).sort((a, b) => new Date(b.watchedAt).getTime() - new Date(a.watchedAt).getTime() || b.season - a.season || b.episode - a.episode)[0];
       const watched = new Set(itemProgress.map(row => row.season + ':' + row.episode));
       const lifecycle = lifecycles.get(item.catalogId!);
-      if (item.status !== 'completed' && !item.rewatchActiveId && finishedSeries(lifecycle, available.map(season => ({ number: Number(season.number), loaded: Boolean(season.loaded), episodes: season.episodes })), watched, new Date().toISOString().slice(0, 10))) {
+      if (item.status !== 'completed' && !item.abandoned && !item.rewatchActiveId && finishedSeries(lifecycle, available.map(season => ({ number: Number(season.number), loaded: Boolean(season.loaded), episodes: season.episodes })), watched, new Date().toISOString().slice(0, 10))) {
         // Não inventa uma data de consumo quando algum episódio foi registrado sem data.
         const dated = itemProgress.length > 0 && itemProgress.every(row => row.watchedAt);
         const completionDate = dated && latest ? new Date(latest.watchedAt) : new Date();
         const changes = { status: 'completed' as const, completedAt: completionDate, completedOn: dated ? completionDate.toISOString().slice(0, 10) : null, watchedDateUnknown: !dated, episodesCompletedAt: new Date() };
-        completions.push({ updateOne: { filter: { _id: item._id, ownerId: item.ownerId, status: item.status, rewatchActiveId: null, ...(item.get('updatedAt') ? { updatedAt: item.get('updatedAt') } : {}) }, update: { $set: changes } } });
+        completions.push({ updateOne: { filter: { _id: item._id, ownerId: item.ownerId, status: item.status, abandoned: { $ne: true }, rewatchActiveId: null, ...(item.get('updatedAt') ? { updatedAt: item.get('updatedAt') } : {}) }, update: { $set: changes } } });
         item.set(changes);
       }
       const base = this.publicItem(item);
@@ -678,6 +685,22 @@ export class LibraryService implements OnModuleInit {
     await recordPrivateActivity(this.connection,item,archived?'archived':'restored');
     return this.publicItem(item);
   }
+  async setAbandoned(ownerId: string, id: string, abandoned: boolean) {
+    const previous = await this.owned(ownerId, id);
+    if (Boolean(previous.abandoned) === abandoned) return this.publicItem(previous);
+    const type = abandoned ? 'abandoned' : 'resumed';
+    // A marcação é independente do progresso original para permitir retomada sem perda de histórico.
+    const item = await this.items.findOneAndUpdate({
+      _id: previous._id, ownerId, status: previous.status,
+      abandoned: abandoned ? { $ne: true } : true,
+    }, {
+      $set: { abandoned },
+      ...(previous.kind === 'game' ? { $push: { gameStatusHistory: gameStatusEvent(type, previous.status, previous.status) } } : {}),
+    }, { returnDocument: 'after', runValidators: true }).exec();
+    if (!item) throw new ConflictException('O acompanhamento mudou em outra aba. Atualize e tente novamente.');
+    await recordPrivateActivity(this.connection, item, type);
+    return this.publicItem(item);
+  }
   async gameStatusHistory(ownerId: string, id: string, before?: string) {
     const item = await this.items.findOne({ _id: this.id(id), ownerId }).select('kind gameStatusHistory').lean().exec();
     if (!item) throw new NotFoundException('Item não encontrado.');
@@ -756,7 +779,7 @@ class LibraryController {
   async upcoming(@Req() request: Request, @Param('id') id: string) { return this.library.upcoming(await this.owner(request), id, await this.language(request)); }
   @Get(':id/game-status-history')
   @ApiOperation({ summary: 'Consultar histórico privado de status do jogo', description: 'Registra somente alterações novas: adição, mudança real de status, arquivamento/restauração e início automático ao registrar horas/sessão. Datas recordedAt são do servidor no momento da alteração, nunca datas antigas de consumo. Jogos legados não recebem eventos inventados. Cada DLC mantém seu próprio histórico. Eventos gravados atomicamente com a alteração; consultas e reavaliações sem mudança de estado não criam eventos.' })
-  @ApiOkResponse({ description: 'events: até 30 objetos com id UUID, type (added/status/archived/restored), fromStatus nullable, toStatus (planned/active/completed), source (manual/session/time-adjustment), recordedAt ISO. Mais recentes primeiro. nextBefore UUID ou null; earlierHistoryUnknown indica ausência de registro da adição original.' })
+  @ApiOkResponse({ description: 'events: até 30 objetos com id UUID, type (added/status/archived/restored/abandoned/resumed), fromStatus nullable, toStatus (planned/active/completed), source (manual/session/time-adjustment), recordedAt ISO. Mais recentes primeiro. nextBefore UUID ou null; earlierHistoryUnknown indica ausência de registro da adição original.' })
   @ApiResponse({ status: 400, description: 'Item não é jogo, ID/cursor inválido ou cursor de outro jogo.' })
   @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
   @ApiResponse({ status: 404, description: 'Item inexistente ou de outra conta.' })
@@ -797,6 +820,7 @@ class LibraryController {
   @ApiResponse({ status: 429, description: 'Limite de requisições atingido.' })
   async explore(@Req() request: Request, @Query('page') page?: string, @Query('kind') kind?: string) { const owner = await this.owner(request); const language = await this.language(request); this.catalog.limit(owner); const result = await this.library.explore(owner, language, page === undefined ? 1 : Number(page), kind); return { sections: await Promise.all(result.sections.map(async section => ({ ...section, results: 'source' in section && (section.source === 'tmdb' || section.source === 'googlebooks') ? section.results : await Promise.all(section.results.map(item => this.catalog.localize(item, language))) }))) }; }
   @Get()
+  @ApiOkResponse({ description: 'Itens do acompanhamento com abandoned booleano. Séries abandonadas preservam o progresso sem conclusão automática.' })
   @ApiOperation({ summary: 'Listar acompanhamento privado, incluindo livros', description: 'Filmes, séries, jogos e leitura. Séries incluem seriesStatus (ended, canceled, returning ou unknown) e caughtUp. Todos os episódios regulares vistos só concluem automaticamente quando o TMDB confirma encerramento/cancelamento e a contagem integral do catálogo coincide; especiais são opcionais. A reconciliação persiste a conclusão e invalida o XP em segundo plano; falha ou catálogo incompleto não presume término. Jogos importados podem incluir steamImportAppId para link do jogo na Steam; a conta de origem é privada e só aparece em game-imports/stats do dono. Jogos podem incluir parentGameCatalogId, vínculo público IGDB de DLC/expansão dependente; playtimeMinutes permanece exclusivo de cada parte, sem total duplicado. Livros não são importados automaticamente da Minha Coleção.' })
   async list(@Req() request: Request) { return { items: await this.catalog.localizeMany(await this.library.list(await this.owner(request)), await this.language(request)) }; }
   @Post()
@@ -832,6 +856,16 @@ class LibraryController {
   async gameTime(@Req() request: Request, @Param('id') id: string, @Body() dto: GameTimeDto) { return { item: await this.catalog.localize(await this.library.gameTime(await this.owner(request), id, dto), await this.language(request)) }; }
   @ApiResponse({ status: 409, description: 'Status ou arquivamento alterado simultaneamente; atualize antes de reenviar.' })
   @Post(':id/archive') @HttpCode(200) async archive(@Req() request: Request, @Param('id') id: string, @Body() dto: ArchiveDto) { return { item: await this.catalog.localize(await this.library.archive(await this.owner(request), id, dto.archived), await this.language(request)) }; }
+  @Patch(':id/abandoned')
+  @ApiOperation({ summary: 'Abandonar ou retomar uma obra no acompanhamento', description: 'Somente dono. Atualiza abandoned sem apagar progresso, datas, avaliações, sessões ou repetições. Arquivamento tem precedência na Visão geral.' })
+  @ApiOkResponse({ description: 'Objeto item com abandoned booleano e status de progresso preservado.' })
+  @ApiResponse({ status: 400, description: 'Corpo ou ID inválido.' })
+  @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
+  @ApiResponse({ status: 404, description: 'Item não encontrado para esta conta.' })
+  @ApiResponse({ status: 409, description: 'O acompanhamento mudou durante a atualização.' })
+  async setAbandoned(@Req() request: Request, @Param('id') id: string, @Body() dto: AbandonDto) {
+    return { item: await this.library.setAbandoned(await this.owner(request), id, dto.abandoned) };
+  }
 }
 @Module({ imports: [AuthModule, CatalogModule, BooksModule, EpisodesModule, RewatchModule, MongooseModule.forFeature([{ name: LibraryItem.name, schema: ItemSchema }, { name: CatalogEntry.name, schema: CatalogSchema }, { name: TitleComment.name, schema: CommentSchema }])], controllers: [LibraryController], providers: [LibraryService, CommunityService], exports: [LibraryService] })
 export class LibraryModule {}
